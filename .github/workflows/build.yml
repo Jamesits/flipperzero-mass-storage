@@ -8,10 +8,9 @@ jobs:
   ufbt-build:
     runs-on: ubuntu-latest
     name: 'ufbt: Build'
-    matrix:
-      include:
-        - sdk-channel: dev
-        - sdk-channel: release
+    strategy:
+      matrix:
+        sdk-channel: [dev, release]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
