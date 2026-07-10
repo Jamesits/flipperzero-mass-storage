@@ -15,7 +15,14 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            uploads.github.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            update.flipperzero.one:443
 
       - name: Checkout
         uses: actions/checkout@v7
