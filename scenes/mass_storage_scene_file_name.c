@@ -9,16 +9,16 @@ static void mass_storage_file_name_text_callback(void* context) {
     view_dispatcher_send_custom_event(app->view_dispatcher, MassStorageCustomEventNameInput);
 }
 
-static bool mass_storage_create_image(Storage* storage, const char* file_path, uint32_t size) {
-    FURI_LOG_I("TAG", "Creating image %s, len:%lu", file_path, size);
+static bool mass_storage_create_image(Storage* storage, const char* file_path, uint64_t size) {
+    FURI_LOG_I("TAG", "Creating image %s, len:%llu", file_path, size);
     File* file = storage_file_alloc(storage);
 
     bool success = false;
     uint8_t* buffer = malloc(WRITE_BUF_LEN);
     do {
         if(!storage_file_open(file, file_path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) break;
-        if(!storage_file_seek(file, size, true)) break;
-        if(!storage_file_seek(file, 0, true)) break;
+        if(!mass_storage_file_seek(file, size)) break;
+        if(!mass_storage_file_seek(file, 0)) break;
         // Zero out first 4k - partition table and adjacent data
         if(!storage_file_write(file, buffer, WRITE_BUF_LEN)) break;
 

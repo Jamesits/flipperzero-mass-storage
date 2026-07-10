@@ -14,7 +14,7 @@ static bool file_read(
     uint32_t out_cap) {
     MassStorageApp* app = ctx;
     FURI_LOG_T(TAG, "file_read lba=%08lX count=%04X out_cap=%08lX", lba, count, out_cap);
-    if(!storage_file_seek(app->file, lba * SCSI_BLOCK_SIZE, true)) {
+    if(!mass_storage_file_seek(app->file, (uint64_t)lba * SCSI_BLOCK_SIZE)) {
         FURI_LOG_W(TAG, "seek failed");
         return false;
     }
@@ -32,7 +32,7 @@ static bool file_write(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, ui
         FURI_LOG_W(TAG, "bad write params count=%u len=%lu", count, len);
         return false;
     }
-    if(!storage_file_seek(app->file, lba * SCSI_BLOCK_SIZE, true)) {
+    if(!mass_storage_file_seek(app->file, (uint64_t)lba * SCSI_BLOCK_SIZE)) {
         FURI_LOG_W(TAG, "seek failed");
         return false;
     }

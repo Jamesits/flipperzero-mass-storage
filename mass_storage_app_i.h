@@ -41,7 +41,7 @@ struct MassStorageApp {
     MassStorageUsb* usb;
 
     char new_file_name[MASS_STORAGE_FILE_NAME_LEN + 1];
-    uint32_t new_file_size;
+    uint64_t new_file_size;
 
     uint32_t bytes_read, bytes_written;
 };
@@ -65,3 +65,4 @@ enum MassStorageCustomEvent {
 };
 
 void mass_storage_app_show_loading_popup(MassStorageApp* app, bool show);
+bool mass_storage_file_seek(File* file, uint64_t offset);

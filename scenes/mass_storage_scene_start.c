@@ -2,7 +2,7 @@
 
 static const struct {
     char* name;
-    uint32_t value;
+    uint64_t value;
 } image_size[] = {
     {"1.44M", 1440 * 1024},
     {"2M", 2 * 1024 * 1024},
@@ -17,6 +17,8 @@ static const struct {
     {"700M", 700 * 1024 * 1024},
     {"1G", 1024 * 1024 * 1024},
     {"2G", 2u * 1024 * 1024 * 1024},
+    {"4G", 4ull * 1024 * 1024 * 1024},
+    {"8G", 8ull * 1024 * 1024 * 1024},
 };
 
 static void mass_storage_item_select(void* context, uint32_t index) {

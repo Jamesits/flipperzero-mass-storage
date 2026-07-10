@@ -32,6 +32,20 @@ void mass_storage_app_show_loading_popup(MassStorageApp* app, bool show) {
     }
 }
 
+bool mass_storage_file_seek(File* file, uint64_t offset) {
+    uint32_t chunk = offset > UINT32_MAX ? UINT32_MAX : offset;
+    if(!storage_file_seek(file, chunk, true)) return false;
+
+    offset -= chunk;
+    while(offset > 0) {
+        chunk = offset > UINT32_MAX ? UINT32_MAX : offset;
+        if(!storage_file_seek(file, chunk, false)) return false;
+        offset -= chunk;
+    }
+
+    return true;
+}
+
 MassStorageApp* mass_storage_app_alloc(char* arg) {
     MassStorageApp* app = malloc(sizeof(MassStorageApp));
     app->file_path = furi_string_alloc();
