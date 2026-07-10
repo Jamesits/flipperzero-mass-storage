@@ -20,9 +20,10 @@
 #define CSW_STATUS_NOK         (1)
 #define CSW_STATUS_PHASE_ERROR (2)
 
-// Keep transfers small enough for the Flipper's shared heap.
-// Must be SCSI_BLOCK_SIZE aligned.
-#define USB_MSC_BUF_SIZE (4UL * 1024UL)
+// Use larger transfers when the Flipper's shared heap allows it.
+// Sizes must be SCSI_BLOCK_SIZE aligned.
+#define USB_MSC_BUF_SIZE_MAX (16UL * 1024UL)
+#define USB_MSC_BUF_SIZE_MIN (4UL * 1024UL)
 
 static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg);
 static usbd_respond usb_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback);
@@ -70,6 +71,7 @@ static int32_t mass_thread_worker(void* context) {
     CBW cbw = {0};
     CSW csw = {0};
     uint8_t* buf = NULL;
+    uint32_t buf_cap = 0;
     uint32_t buf_len = 0, buf_sent = 0;
     enum {
         StateReadCBW,
@@ -94,6 +96,7 @@ static int32_t mass_thread_worker(void* context) {
                 free(buf);
                 buf = NULL;
             }
+            buf_cap = 0;
             buf_len = buf_sent = 0;
             state = StateReadCBW;
         }
@@ -122,13 +125,20 @@ static int32_t mass_thread_worker(void* context) {
                         continue;
                     }
                     if(cbw.len && !buf) {
-                        buf = malloc(USB_MSC_BUF_SIZE);
+                        for(buf_cap = USB_MSC_BUF_SIZE_MAX;
+                            !buf && buf_cap >= USB_MSC_BUF_SIZE_MIN;
+                            buf_cap /= 2) {
+                            buf = malloc(buf_cap);
+                            if(buf) break;
+                        }
                         if(!buf) {
+                            buf_cap = 0;
                             FURI_LOG_E(TAG, "failed to allocate transfer buffer");
                             usbd_ep_stall(dev, USB_MSC_TX_EP);
                             usbd_ep_stall(dev, USB_MSC_RX_EP);
                             continue;
                         }
+                        FURI_LOG_D(TAG, "allocated %lu-byte transfer buffer", buf_cap);
                     }
                     if(cbw.flags & CBW_FLAGS_DEVICE_TO_HOST) {
                         buf_len = 0;
@@ -146,7 +156,7 @@ static int32_t mass_thread_worker(void* context) {
                         state = StateBuildCSW;
                         continue;
                     }
-                    uint32_t buf_clamp = MIN(cbw.len, USB_MSC_BUF_SIZE);
+                    uint32_t buf_clamp = MIN(cbw.len, buf_cap);
                     if(buf_len < buf_clamp) {
                         int32_t len =
                             usbd_ep_read(dev, USB_MSC_RX_EP, buf + buf_len, buf_clamp - buf_len);
@@ -179,7 +189,7 @@ static int32_t mass_thread_worker(void* context) {
                         state = StateBuildCSW;
                         continue;
                     }
-                    uint32_t buf_clamp = MIN(cbw.len, USB_MSC_BUF_SIZE);
+                    uint32_t buf_clamp = MIN(cbw.len, buf_cap);
                     if(!buf_len && !scsi_cmd_tx_data(&scsi, buf, &buf_len, buf_clamp)) {
                         FURI_LOG_W(TAG, "short tx");
                         // usbd_ep_stall(dev, USB_MSC_TX_EP);
