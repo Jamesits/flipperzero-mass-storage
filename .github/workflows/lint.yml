@@ -1,0 +1,25 @@
+name: "FAP: Lint"
+
+on:
+  - push
+  - pull_request
+
+jobs:
+  ufbt-lint:
+    runs-on: ubuntu-latest
+    name: 'ufbt: Lint'
+    matrix:
+      include:
+        - sdk-channel: dev
+        - sdk-channel: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        with:
+          sdk-channel: ${{ matrix.sdk-channel }}
+          task: lint

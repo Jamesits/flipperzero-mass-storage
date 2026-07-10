@@ -1,0 +1,31 @@
+name: "FAP: Build"
+
+on:
+  - push
+  - pull_request
+
+jobs:
+  ufbt-build:
+    runs-on: ubuntu-latest
+    name: 'ufbt: Build'
+    matrix:
+      include:
+        - sdk-channel: dev
+        - sdk-channel: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        id: build
+        with:
+          sdk-channel: ${{ matrix.sdk-channel }}
+
+      - name: Upload app artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ github.event.repository.name }}-${{ steps.build.outputs.suffix }}-${{ matrix.sdk-channel }}
+          path: ${{ steps.build.outputs.fap-artifacts }}
