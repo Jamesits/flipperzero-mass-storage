@@ -326,9 +326,8 @@ static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg) {
         return usbd_ack;
     case 1: // config
         usbd_ep_config(
-            dev, USB_MSC_RX_EP, USB_EPTYPE_BULK /* | USB_EPTYPE_DBLBUF*/, USB_MSC_RX_EP_SIZE);
-        usbd_ep_config(
-            dev, USB_MSC_TX_EP, USB_EPTYPE_BULK /* | USB_EPTYPE_DBLBUF*/, USB_MSC_TX_EP_SIZE);
+            dev, USB_MSC_RX_EP, USB_EPTYPE_BULK | USB_EPTYPE_DBLBUF, USB_MSC_RX_EP_SIZE);
+        usbd_ep_config(dev, USB_MSC_TX_EP, USB_EPTYPE_BULK, USB_MSC_TX_EP_SIZE);
         usbd_reg_endpoint(dev, USB_MSC_RX_EP, usb_rxtx_ep_callback);
         usbd_reg_endpoint(dev, USB_MSC_TX_EP, usb_rxtx_ep_callback);
         return usbd_ack;

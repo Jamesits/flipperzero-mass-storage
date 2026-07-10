@@ -37,6 +37,8 @@ struct MassStorageApp {
 
     FuriString* file_path;
     File* files[MASS_STORAGE_MAX_FILE_PARTS];
+    uint64_t file_sizes[MASS_STORAGE_MAX_FILE_PARTS];
+    uint64_t file_offsets[MASS_STORAGE_MAX_FILE_PARTS];
     uint8_t file_count;
     MassStorage* mass_storage_view;
 
