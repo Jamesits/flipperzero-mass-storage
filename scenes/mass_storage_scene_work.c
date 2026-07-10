@@ -116,6 +116,18 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
         }
     } else if(event.type == SceneManagerEventTypeTick) {
         mass_storage_set_stats(app->mass_storage_view, app->bytes_read, app->bytes_written);
+        if(app->bytes_read != app->led_bytes_read ||
+           app->bytes_written != app->led_bytes_written) {
+            if(!app->led_blinking) {
+                notification_message(app->notifications, &sequence_blink_start_red);
+                app->led_blinking = true;
+            }
+            app->led_bytes_read = app->bytes_read;
+            app->led_bytes_written = app->bytes_written;
+        } else if(app->led_blinking) {
+            notification_message(app->notifications, &sequence_blink_stop);
+            app->led_blinking = false;
+        }
     } else if(event.type == SceneManagerEventTypeBack) {
         consumed = scene_manager_search_and_switch_to_previous_scene(
             app->scene_manager, MassStorageSceneFileSelect);
@@ -130,6 +142,8 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
 void mass_storage_scene_work_on_enter(void* context) {
     MassStorageApp* app = context;
     app->bytes_read = app->bytes_written = 0;
+    app->led_bytes_read = app->led_bytes_written = 0;
+    app->led_blinking = false;
 
     if(!storage_file_exists(app->fs_api, furi_string_get_cstr(app->file_path))) {
         scene_manager_search_and_switch_to_previous_scene(
@@ -185,6 +199,11 @@ void mass_storage_scene_work_on_enter(void* context) {
 void mass_storage_scene_work_on_exit(void* context) {
     MassStorageApp* app = context;
     mass_storage_app_show_loading_popup(app, true);
+
+    if(app->led_blinking) {
+        notification_message(app->notifications, &sequence_blink_stop);
+        app->led_blinking = false;
+    }
 
     if(app->usb_mutex) {
         furi_mutex_free(app->usb_mutex);

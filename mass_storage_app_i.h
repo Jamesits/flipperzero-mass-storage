@@ -14,6 +14,7 @@
 #include <gui/modules/text_input.h>
 #include <gui/modules/loading.h>
 #include <gui/modules/widget.h>
+#include <notification/notification_messages.h>
 #include <storage/storage.h>
 #include "views/mass_storage_view.h"
 #include <mass_storage_icons.h>
@@ -34,6 +35,7 @@ struct MassStorageApp {
     TextInput* text_input;
     VariableItemList* variable_item_list;
     Loading* loading;
+    NotificationApp* notifications;
 
     FuriString* file_path;
     File* files[MASS_STORAGE_MAX_FILE_PARTS];
@@ -49,6 +51,8 @@ struct MassStorageApp {
     uint64_t new_file_size;
 
     uint32_t bytes_read, bytes_written;
+    uint32_t led_bytes_read, led_bytes_written;
+    bool led_blinking;
 };
 
 typedef enum {

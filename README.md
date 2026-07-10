@@ -2,9 +2,11 @@
 
 ![Project Status - Feature Complete](https://img.shields.io/badge/Project_Status-Feature_Complete-2ea44f)
 
-Derived from [Mass Storage](https://lab.flipper.net/apps/mass_storage), added:
+Derived from [Mass Storage](https://lab.flipper.net/apps/mass_storage). Changes to upstream project:
 
-- 64-bit range support (creates images up to 8GiB)
+- Fixed random OOM reboots
+- Supports image size up to 8GiB (64-bit SCSI messages and image splitting on FAT32)
+- Flashes the LED during file transfer
 
 ## Performance
 
