@@ -21,6 +21,8 @@
 #define MASS_STORAGE_APP_PATH_FOLDER STORAGE_APP_DATA_PATH_PREFIX
 #define MASS_STORAGE_APP_EXTENSION   ".img"
 #define MASS_STORAGE_FILE_NAME_LEN   40
+#define MASS_STORAGE_MAX_FILE_PARTS  4
+#define MASS_STORAGE_FILE_PART_SIZE  (2ull * 1024 * 1024 * 1024)
 
 struct MassStorageApp {
     Gui* gui;
@@ -34,7 +36,8 @@ struct MassStorageApp {
     Loading* loading;
 
     FuriString* file_path;
-    File* file;
+    File* files[MASS_STORAGE_MAX_FILE_PARTS];
+    uint8_t file_count;
     MassStorage* mass_storage_view;
 
     FuriMutex* usb_mutex;
