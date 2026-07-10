@@ -50,6 +50,7 @@ MassStorageApp* mass_storage_app_alloc(char* arg) {
     MassStorageApp* app = malloc(sizeof(MassStorageApp));
     app->file_path = furi_string_alloc();
     app->read_only = false;
+    app->device_type = MassStorageDeviceTypeUsbSsd;
 
     if(arg != NULL) {
         furi_string_set_str(app->file_path, arg);
@@ -101,11 +102,7 @@ MassStorageApp* mass_storage_app_alloc(char* arg) {
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
     if(storage_file_exists(app->fs_api, furi_string_get_cstr(app->file_path))) {
-        if(!furi_hal_usb_is_locked()) {
-            scene_manager_next_scene(app->scene_manager, MassStorageSceneWork);
-        } else {
-            scene_manager_next_scene(app->scene_manager, MassStorageSceneUsbLocked);
-        }
+        scene_manager_next_scene(app->scene_manager, MassStorageSceneSettings);
     } else {
         scene_manager_next_scene(app->scene_manager, MassStorageSceneStart);
     }

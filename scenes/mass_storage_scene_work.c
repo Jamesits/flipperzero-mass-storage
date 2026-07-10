@@ -5,6 +5,10 @@
 
 #define TAG "MassStorageSceneWork"
 
+static uint32_t mass_storage_block_size(MassStorageApp* app) {
+    return app->device_type == MassStorageDeviceTypeOptical ? 2048 : SCSI_BLOCK_SIZE;
+}
+
 static bool file_prepare_part(
     MassStorageApp* app,
     uint64_t offset,
@@ -29,14 +33,16 @@ static bool file_prepare_part(
 static bool file_read(
     void* ctx,
     uint32_t lba,
-    uint16_t count,
+    uint32_t count,
     uint8_t* out,
     uint32_t* out_len,
     uint32_t out_cap) {
     MassStorageApp* app = ctx;
-    FURI_LOG_T(TAG, "file_read lba=%08lX count=%04X out_cap=%08lX", lba, count, out_cap);
-    uint32_t remaining = MIN(out_cap, count * SCSI_BLOCK_SIZE);
-    uint64_t offset = (uint64_t)lba * SCSI_BLOCK_SIZE;
+    uint32_t block_size = mass_storage_block_size(app);
+    FURI_LOG_T(TAG, "file_read lba=%08lX count=%08lX out_cap=%08lX", lba, count, out_cap);
+    uint64_t requested = (uint64_t)count * block_size;
+    uint32_t remaining = requested < out_cap ? requested : out_cap;
+    uint64_t offset = (uint64_t)lba * block_size;
     *out_len = 0;
 
     while(remaining > 0) {
@@ -54,22 +60,23 @@ static bool file_read(
         if(bytes_read != chunk || chunk == 0) return false;
     }
 
-    FURI_LOG_T(TAG, "%lu/%lu", *out_len, count * SCSI_BLOCK_SIZE);
+    FURI_LOG_T(TAG, "%lu/%llu", *out_len, requested);
     app->bytes_read += *out_len;
     return true;
 }
 
 static bool file_write(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, uint32_t len) {
     MassStorageApp* app = ctx;
+    uint32_t block_size = mass_storage_block_size(app);
     FURI_LOG_T(TAG, "file_write lba=%08lX count=%04X len=%08lX", lba, count, len);
-    if(app->read_only) return false;
-    if(len != count * SCSI_BLOCK_SIZE) {
+    if(app->read_only || app->device_type == MassStorageDeviceTypeOptical) return false;
+    if(len != count * block_size) {
         FURI_LOG_W(TAG, "bad write params count=%u len=%lu", count, len);
         return false;
     }
 
     uint32_t remaining = len;
-    uint64_t offset = (uint64_t)lba * SCSI_BLOCK_SIZE;
+    uint64_t offset = (uint64_t)lba * block_size;
     while(remaining > 0) {
         File* file;
         uint8_t part;
@@ -94,7 +101,7 @@ static uint32_t file_num_blocks(void* ctx) {
     for(uint8_t part = 0; part < app->file_count; part++) {
         size += app->file_sizes[part];
     }
-    return size / SCSI_BLOCK_SIZE;
+    return size / mass_storage_block_size(app);
 }
 
 static void file_eject(void* ctx) {
@@ -109,7 +116,7 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
     if(event.type == SceneManagerEventTypeCustom) {
         if(event.event == MassStorageCustomEventEject) {
             consumed = scene_manager_search_and_switch_to_previous_scene(
-                app->scene_manager, MassStorageSceneFileSelect);
+                app->scene_manager, MassStorageSceneSettings);
             if(!consumed) {
                 consumed = scene_manager_search_and_switch_to_previous_scene(
                     app->scene_manager, MassStorageSceneStart);
@@ -131,7 +138,7 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
         }
     } else if(event.type == SceneManagerEventTypeBack) {
         consumed = scene_manager_search_and_switch_to_previous_scene(
-            app->scene_manager, MassStorageSceneFileSelect);
+            app->scene_manager, MassStorageSceneSettings);
         if(!consumed) {
             consumed = scene_manager_search_and_switch_to_previous_scene(
                 app->scene_manager, MassStorageSceneStart);
@@ -161,6 +168,7 @@ void mass_storage_scene_work_on_enter(void* context) {
 
     mass_storage_set_file_name(app->mass_storage_view, file_name);
     app->file_count = 0;
+    bool read_only = app->read_only || app->device_type == MassStorageDeviceTypeOptical;
     FuriString* part_path = furi_string_alloc();
     for(uint8_t part = 0; part < MASS_STORAGE_MAX_FILE_PARTS; part++) {
         if(part == 0) {
@@ -175,7 +183,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         furi_assert(storage_file_open(
             file,
             furi_string_get_cstr(part_path),
-            app->read_only ? FSAM_READ : FSAM_READ | FSAM_WRITE,
+            read_only ? FSAM_READ : FSAM_READ | FSAM_WRITE,
             FSOM_OPEN_EXISTING));
         app->files[app->file_count] = file;
         app->file_sizes[app->file_count] = storage_file_size(file);
@@ -190,7 +198,9 @@ void mass_storage_scene_work_on_enter(void* context) {
         .write = file_write,
         .num_blocks = file_num_blocks,
         .eject = file_eject,
-        .read_only = app->read_only,
+        .read_only = read_only,
+        .device_type = app->device_type,
+        .block_size = mass_storage_block_size(app),
     };
 
     app->usb = mass_storage_usb_start(furi_string_get_cstr(file_name), fn);

@@ -24,7 +24,7 @@ bool mass_storage_scene_usb_locked_on_event(void* context, SceneManagerEvent eve
 
     if(event.type == SceneManagerEventTypeBack) {
         consumed = scene_manager_search_and_switch_to_previous_scene(
-            app->scene_manager, MassStorageSceneFileSelect);
+            app->scene_manager, MassStorageSceneSettings);
         if(!consumed) {
             consumed = scene_manager_search_and_switch_to_previous_scene(
                 app->scene_manager, MassStorageSceneStart);

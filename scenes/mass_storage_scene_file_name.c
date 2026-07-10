@@ -115,11 +115,7 @@ bool mass_storage_scene_file_name_on_event(void* context, SceneManagerEvent even
                 MASS_STORAGE_APP_EXTENSION);
             if(mass_storage_create_image(
                    app->fs_api, furi_string_get_cstr(app->file_path), app->new_file_size)) {
-                if(!furi_hal_usb_is_locked()) {
-                    scene_manager_next_scene(app->scene_manager, MassStorageSceneWork);
-                } else {
-                    scene_manager_next_scene(app->scene_manager, MassStorageSceneUsbLocked);
-                }
+                scene_manager_next_scene(app->scene_manager, MassStorageSceneSettings);
             } // TODO: error message screen
         }
     }

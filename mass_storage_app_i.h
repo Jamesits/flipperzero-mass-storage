@@ -50,6 +50,7 @@ struct MassStorageApp {
     char new_file_name[MASS_STORAGE_FILE_NAME_LEN + 1];
     uint64_t new_file_size;
     bool read_only;
+    MassStorageDeviceType device_type;
 
     uint32_t bytes_read, bytes_written;
     uint32_t led_bytes_read, led_bytes_written;
@@ -72,6 +73,7 @@ enum MassStorageCustomEvent {
     MassStorageCustomEventFileSelect,
     MassStorageCustomEventNewImage,
     MassStorageCustomEventNameInput,
+    MassStorageCustomEventStart,
 };
 
 void mass_storage_app_show_loading_popup(MassStorageApp* app, bool show);

@@ -73,13 +73,17 @@ static int32_t mass_thread_worker(void* context) {
     uint8_t* buf = NULL;
     uint32_t buf_cap = 0;
     uint32_t buf_len = 0, buf_sent = 0;
-    enum {
+    uint32_t data_sent = 0;
+    enum MassStorageState {
         StateReadCBW,
         StateReadData,
         StateWriteData,
+        StateWriteZlp,
         StateBuildCSW,
         StateWriteCSW,
-    } state = StateReadCBW;
+    };
+    enum MassStorageState state = StateReadCBW;
+    enum MassStorageState state_after_zlp = StateBuildCSW;
     while(true) {
         uint32_t flags = furi_thread_flags_wait(EventAll, FuriFlagWaitAny, FuriWaitForever);
         if(flags & EventExit) {
@@ -98,6 +102,7 @@ static int32_t mass_thread_worker(void* context) {
             }
             buf_cap = 0;
             buf_len = buf_sent = 0;
+            data_sent = 0;
             state = StateReadCBW;
         }
         if(flags & EventRxTx) do {
@@ -121,9 +126,16 @@ static int32_t mass_thread_worker(void* context) {
                         csw.sig = CSW_SIG;
                         csw.tag = cbw.tag;
                         csw.status = CSW_STATUS_NOK;
-                        state = StateWriteCSW;
+                        csw.residue = cbw.len;
+                        if((cbw.flags & CBW_FLAGS_DEVICE_TO_HOST) && cbw.len) {
+                            state_after_zlp = StateWriteCSW;
+                            state = StateWriteZlp;
+                        } else {
+                            state = StateWriteCSW;
+                        }
                         continue;
                     }
+                    data_sent = 0;
                     if(cbw.len && !buf) {
                         for(buf_cap = USB_MSC_BUF_SIZE_MAX;
                             !buf && buf_cap >= USB_MSC_BUF_SIZE_MIN;
@@ -192,8 +204,12 @@ static int32_t mass_thread_worker(void* context) {
                     uint32_t buf_clamp = MIN(cbw.len, buf_cap);
                     if(!buf_len && !scsi_cmd_tx_data(&scsi, buf, &buf_len, buf_clamp)) {
                         FURI_LOG_W(TAG, "short tx");
-                        // usbd_ep_stall(dev, USB_MSC_TX_EP);
-                        state = StateBuildCSW;
+                        if(data_sent % USB_MSC_TX_EP_SIZE) {
+                            state = StateBuildCSW;
+                        } else {
+                            state_after_zlp = StateBuildCSW;
+                            state = StateWriteZlp;
+                        }
                         continue;
                     }
                     int32_t len = usbd_ep_write(
@@ -208,9 +224,17 @@ static int32_t mass_thread_worker(void* context) {
                     buf_sent += len;
                     if(buf_sent == buf_len) {
                         cbw.len -= buf_len;
+                        data_sent += buf_len;
                         buf_len = 0;
                         buf_sent = 0;
                     }
+                    continue;
+                }; break;
+                case StateWriteZlp: {
+                    FURI_LOG_T(TAG, "StateWriteZlp");
+                    int32_t len = usbd_ep_write(dev, USB_MSC_TX_EP, NULL, 0);
+                    if(len < 0) break;
+                    state = state_after_zlp;
                     continue;
                 }; break;
                 case StateBuildCSW: {
@@ -249,6 +273,7 @@ static int32_t mass_thread_worker(void* context) {
                     }
                     memset(&cbw, 0, sizeof(cbw));
                     memset(&csw, 0, sizeof(csw));
+                    data_sent = 0;
                     state = StateReadCBW;
                     continue;
                 }; break;

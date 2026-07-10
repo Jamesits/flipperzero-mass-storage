@@ -12,12 +12,20 @@
 #define SCSI_ASC_INVALID_FIELD_IN_CDB           (0x24)
 #define SCSI_ASC_WRITE_PROTECTED                (0x27)
 
+typedef enum {
+    MassStorageDeviceTypeUsbSsd,
+    MassStorageDeviceTypeUsbHdd,
+    MassStorageDeviceTypeFdd,
+    MassStorageDeviceTypeOptical,
+    MassStorageDeviceTypeCount,
+} MassStorageDeviceType;
+
 typedef struct {
     void* ctx;
     bool (*read)(
         void* ctx,
         uint32_t lba,
-        uint16_t count,
+        uint32_t count,
         uint8_t* out,
         uint32_t* out_len,
         uint32_t out_cap);
@@ -25,6 +33,8 @@ typedef struct {
     uint32_t (*num_blocks)(void* ctx);
     void (*eject)(void* ctx);
     bool read_only;
+    MassStorageDeviceType device_type;
+    uint32_t block_size;
 } SCSIDeviceFunc;
 
 typedef struct {
@@ -42,9 +52,9 @@ typedef struct {
     // valid from cmd_start to cmd_end
     union {
         struct {
-            uint16_t count;
+            uint32_t count;
             uint32_t lba;
-        } read_10; // SCSI_READ_10
+        } read;
 
         struct {
             uint16_t count;

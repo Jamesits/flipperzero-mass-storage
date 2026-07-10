@@ -37,12 +37,6 @@ static void mass_storage_image_size(VariableItem* item) {
     app->new_file_size = image_size[index].value;
 }
 
-static void mass_storage_read_only(VariableItem* item) {
-    MassStorageApp* app = variable_item_get_context(item);
-    app->read_only = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, app->read_only ? "On" : "Off");
-}
-
 void mass_storage_scene_start_on_enter(void* context) {
     MassStorageApp* app = context;
 
@@ -52,16 +46,11 @@ void mass_storage_scene_start_on_enter(void* context) {
     item = variable_item_list_add(
         app->variable_item_list, "New image", COUNT_OF(image_size), mass_storage_image_size, app);
 
-    VariableItem* read_only_item = variable_item_list_add(
-        app->variable_item_list, "Read only", 2, mass_storage_read_only, app);
-
     variable_item_list_set_enter_callback(app->variable_item_list, mass_storage_item_select, app);
 
     variable_item_set_current_value_index(item, 2);
     variable_item_set_current_value_text(item, image_size[2].name);
     app->new_file_size = image_size[2].value;
-    variable_item_set_current_value_index(read_only_item, app->read_only);
-    variable_item_set_current_value_text(read_only_item, app->read_only ? "On" : "Off");
     view_dispatcher_switch_to_view(app->view_dispatcher, MassStorageAppViewStart);
 }
 

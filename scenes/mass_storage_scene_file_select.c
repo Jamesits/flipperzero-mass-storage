@@ -1,5 +1,4 @@
 #include "../mass_storage_app_i.h"
-#include "furi_hal_power.h"
 
 static bool mass_storage_file_select(MassStorageApp* mass_storage) {
     furi_assert(mass_storage);
@@ -20,11 +19,7 @@ void mass_storage_scene_file_select_on_enter(void* context) {
     MassStorageApp* mass_storage = context;
 
     if(mass_storage_file_select(mass_storage)) {
-        if(!furi_hal_usb_is_locked()) {
-            scene_manager_next_scene(mass_storage->scene_manager, MassStorageSceneWork);
-        } else {
-            scene_manager_next_scene(mass_storage->scene_manager, MassStorageSceneUsbLocked);
-        }
+        scene_manager_next_scene(mass_storage->scene_manager, MassStorageSceneSettings);
     } else {
         scene_manager_previous_scene(mass_storage->scene_manager);
     }
