@@ -50,6 +50,7 @@ struct MassStorageApp {
     char new_file_name[MASS_STORAGE_FILE_NAME_LEN + 1];
     uint64_t new_file_size;
     bool read_only;
+    bool exit_on_eject;
     MassStorageDeviceType device_type;
 
     uint32_t bytes_read, bytes_written;

@@ -107,7 +107,9 @@ static uint32_t file_num_blocks(void* ctx) {
 static void file_eject(void* ctx) {
     MassStorageApp* app = ctx;
     FURI_LOG_D(TAG, "EJECT");
-    view_dispatcher_send_custom_event(app->view_dispatcher, MassStorageCustomEventEject);
+    if(app->exit_on_eject) {
+        view_dispatcher_send_custom_event(app->view_dispatcher, MassStorageCustomEventEject);
+    }
 }
 
 bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
