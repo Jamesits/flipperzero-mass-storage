@@ -49,6 +49,7 @@ bool mass_storage_file_seek(File* file, uint64_t offset) {
 MassStorageApp* mass_storage_app_alloc(char* arg) {
     MassStorageApp* app = malloc(sizeof(MassStorageApp));
     app->file_path = furi_string_alloc();
+    app->read_only = false;
 
     if(arg != NULL) {
         furi_string_set_str(app->file_path, arg);

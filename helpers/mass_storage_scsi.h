@@ -5,10 +5,12 @@
 #define SCSI_BLOCK_SIZE (0x200UL)
 
 #define SCSI_SK_ILLEGAL_REQUEST (5)
+#define SCSI_SK_DATA_PROTECT    (7)
 
 #define SCSI_ASC_INVALID_COMMAND_OPERATION_CODE (0x20)
 #define SCSI_ASC_LBA_OOB                        (0x21)
 #define SCSI_ASC_INVALID_FIELD_IN_CDB           (0x24)
+#define SCSI_ASC_WRITE_PROTECTED                (0x27)
 
 typedef struct {
     void* ctx;
@@ -22,6 +24,7 @@ typedef struct {
     bool (*write)(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, uint32_t len);
     uint32_t (*num_blocks)(void* ctx);
     void (*eject)(void* ctx);
+    bool read_only;
 } SCSIDeviceFunc;
 
 typedef struct {

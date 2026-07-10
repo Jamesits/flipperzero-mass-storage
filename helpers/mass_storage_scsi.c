@@ -29,6 +29,11 @@ bool scsi_cmd_start(SCSISession* scsi, uint8_t* cmd, uint8_t len) {
     switch(cmd[0]) {
     case SCSI_WRITE_10: {
         if(len < 10) return false;
+        if(scsi->fn.read_only) {
+            scsi->sk = SCSI_SK_DATA_PROTECT;
+            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+            return false;
+        }
         scsi->write_10.lba = cmd[2] << 24 | cmd[3] << 16 | cmd[4] << 8 | cmd[5];
         scsi->write_10.count = cmd[7] << 8 | cmd[8];
         FURI_LOG_D(TAG, "SCSI_WRITE_10 %08lX %04X", scsi->write_10.lba, scsi->write_10.count);
@@ -190,7 +195,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         if(cap < 4) return false;
         data[0] = 3; // mode data length (len - 1)
         data[1] = 0; // medium type
-        data[2] = 0; // device-specific parameter
+        data[2] = scsi->fn.read_only ? 0x80 : 0; // device-specific parameter (write protected)
         data[3] = 0; // block descriptor length
         *len = 4;
         scsi->tx_done = true;

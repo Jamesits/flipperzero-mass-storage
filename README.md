@@ -7,6 +7,7 @@ Derived from [Mass Storage](https://lab.flipper.net/apps/mass_storage). Changes 
 - Fixed random OOM reboots
 - Supports image size up to 8GiB (64-bit SCSI messages and image splitting on FAT32)
 - Flashes the LED during file transfer
+- Supports mounting disk images read-only
 
 ## Performance
 

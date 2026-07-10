@@ -49,6 +49,7 @@ struct MassStorageApp {
 
     char new_file_name[MASS_STORAGE_FILE_NAME_LEN + 1];
     uint64_t new_file_size;
+    bool read_only;
 
     uint32_t bytes_read, bytes_written;
     uint32_t led_bytes_read, led_bytes_written;

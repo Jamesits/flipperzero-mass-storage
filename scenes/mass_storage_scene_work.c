@@ -62,6 +62,7 @@ static bool file_read(
 static bool file_write(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, uint32_t len) {
     MassStorageApp* app = ctx;
     FURI_LOG_T(TAG, "file_write lba=%08lX count=%04X len=%08lX", lba, count, len);
+    if(app->read_only) return false;
     if(len != count * SCSI_BLOCK_SIZE) {
         FURI_LOG_W(TAG, "bad write params count=%u len=%lu", count, len);
         return false;
@@ -172,7 +173,10 @@ void mass_storage_scene_work_on_enter(void* context) {
 
         File* file = storage_file_alloc(app->fs_api);
         furi_assert(storage_file_open(
-            file, furi_string_get_cstr(part_path), FSAM_READ | FSAM_WRITE, FSOM_OPEN_EXISTING));
+            file,
+            furi_string_get_cstr(part_path),
+            app->read_only ? FSAM_READ : FSAM_READ | FSAM_WRITE,
+            FSOM_OPEN_EXISTING));
         app->files[app->file_count] = file;
         app->file_sizes[app->file_count] = storage_file_size(file);
         app->file_offsets[app->file_count] = UINT64_MAX;
@@ -186,6 +190,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .write = file_write,
         .num_blocks = file_num_blocks,
         .eject = file_eject,
+        .read_only = app->read_only,
     };
 
     app->usb = mass_storage_usb_start(furi_string_get_cstr(file_name), fn);
