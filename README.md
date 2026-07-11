@@ -48,9 +48,7 @@ In CD-RW emulation mode, files without a valid UDF will be reported as empty / n
 
 ### Audio CDs
 
-`.cue`/`.bin` paired files are emulated as read-only audio optical disks. The CUE sheet may
-contain up to 99 `AUDIO` tracks, `INDEX 00/01` entries, and `PREGAP` entries. Multi-file and mixed-mode
-CUE sheets are not supported.
+`.cue`/`.bin` paired files are emulated as read-only audio optical disks. The CUE sheet may contain up to 99 `AUDIO` tracks, `INDEX 00/01` entries, `PREGAP` entries. Multi-file and mixed-mode CUE sheets are not supported.
 
 Audio CD playback is supported over:
 
@@ -68,6 +66,13 @@ Flipper speaker / PA6 output controls:
 - Hold Left/Right: scan backward/forward
 
 Hosts can also control playback with the MMC play, pause/resume, stop, seek, and scan commands.
+
+Supported FLAGS:
+
+- `DCP`: digital-copy permission in the emulated subchannel
+- `4CH`: four-channel marker in the emulated subchannel
+- `PRE`: 50/15 us pre-emphasis; local playback applies de-emphasis
+- `SCMS`: Serial Copy Management System metadata
 
 ## Notes
 

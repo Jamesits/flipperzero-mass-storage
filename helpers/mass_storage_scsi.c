@@ -207,6 +207,12 @@ static bool scsi_audio_track_info(SCSISession* scsi, uint8_t track, SCSIAudioTra
            scsi->fn.audio_track_info(scsi->fn.ctx, track, info);
 }
 
+static uint8_t scsi_audio_adr_control(const SCSIAudioTrackInfo* info) {
+    const uint8_t control_mask = SCSIAudioTrackFlagPreEmphasis | SCSIAudioTrackFlagCopyPermitted |
+                                 SCSIAudioTrackFlagFourChannel;
+    return 0x10 | (info->flags & control_mask);
+}
+
 static bool scsi_audio_track_for_lba(
     SCSISession* scsi,
     uint32_t lba,
@@ -903,7 +909,7 @@ static bool scsi_audio_read_toc(
                     return false;
                 }
                 uint8_t* entry = response + 4 + (uint32_t)descriptor++ * 8;
-                entry[1] = 0x10; // ADR 1, audio track
+                entry[1] = scsi_audio_adr_control(&info);
                 entry[2] = track;
                 scsi_store_cdrom_address(entry + 4, info.start_lba, msf);
             }
@@ -922,7 +928,7 @@ static bool scsi_audio_read_toc(
         response[1] = 10;
         response[2] = 1;
         response[3] = 1;
-        response[5] = 0x10;
+        response[5] = scsi_audio_adr_control(&info);
         response[6] = 1;
         scsi_store_cdrom_address(response + 8, info.start_lba, msf);
         return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
@@ -958,7 +964,7 @@ static bool scsi_audio_read_toc(
             }
             uint8_t* entry = response + 4 + (uint32_t)(track + 2) * 11;
             entry[0] = 1;
-            entry[1] = 0x10;
+            entry[1] = scsi_audio_adr_control(&info);
             entry[3] = track;
             scsi_store_cdrom_address(address, info.start_lba, true);
             memcpy(entry + 8, address + 1, 3);
@@ -1560,7 +1566,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
                     if(!scsi_audio_track_info(scsi, audio_status.track, &info)) return false;
                     uint32_t relative =
                         audio_status.lba >= info.start_lba ? audio_status.lba - info.start_lba : 0;
-                    response[5] = 0x10;
+                    response[5] = scsi_audio_adr_control(&info);
                     response[6] = audio_status.track;
                     response[7] = audio_status.index;
                     scsi_store_cdrom_address(response + 8, audio_status.lba, msf);

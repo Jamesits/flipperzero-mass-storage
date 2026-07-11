@@ -18,15 +18,23 @@
 #define AUDIO_CD_PLAYER_QUEUE_LENGTH (16UL)
 #define AUDIO_CD_PLAYER_STACK_SIZE   (4UL * 1024UL)
 
+// 50/15 us de-emphasis, bilinear-transformed at 44.1 kHz and represented in Q15.
+#define AUDIO_CD_DEEMPHASIS_INPUT_CURRENT   (14070L)
+#define AUDIO_CD_DEEMPHASIS_INPUT_PREVIOUS  (-1956L)
+#define AUDIO_CD_DEEMPHASIS_OUTPUT_PREVIOUS (20654L)
+#define AUDIO_CD_DEEMPHASIS_SCALE           (32768L)
+
 typedef struct {
     uint32_t file_index0;
     uint32_t file_index1;
     uint32_t pregap;
     uint32_t disc_index0;
     uint32_t disc_index1;
+    uint8_t flags;
     bool has_file_index0;
     bool has_file_index1;
     bool has_pregap;
+    bool has_flags;
 } AudioCdTrack;
 
 typedef enum {
@@ -71,6 +79,10 @@ struct AudioCd {
     uint64_t range_end_offset;
     uint64_t half_start[2];
     uint32_t half_valid[2];
+    uint64_t deemphasis_next_offset;
+    int32_t deemphasis_input;
+    int32_t deemphasis_output;
+    bool deemphasis_active;
     bool scan_active;
     bool scan_reverse;
     SCSIAudioStatusCode scan_restore_status;
@@ -150,6 +162,39 @@ static bool audio_cd_parse_file_name(const char* text, FuriString* name) {
         text++;
     if(end == start || strcasecmp(text, "BINARY") != 0) return false;
     furi_string_set_strn(name, start, end - start);
+    return true;
+}
+
+static bool audio_cd_parse_flags(const char* text, uint8_t* flags) {
+    uint8_t parsed = 0;
+    while(*text) {
+        while(isspace((unsigned char)*text))
+            text++;
+        if(!*text) break;
+
+        const char* end = text;
+        while(*end && !isspace((unsigned char)*end))
+            end++;
+
+        size_t length = end - text;
+        uint8_t flag;
+        if(length == 3 && strncasecmp(text, "PRE", length) == 0) {
+            flag = SCSIAudioTrackFlagPreEmphasis;
+        } else if(length == 3 && strncasecmp(text, "DCP", length) == 0) {
+            flag = SCSIAudioTrackFlagCopyPermitted;
+        } else if(length == 3 && strncasecmp(text, "4CH", length) == 0) {
+            flag = SCSIAudioTrackFlagFourChannel;
+        } else if(length == 4 && strncasecmp(text, "SCMS", length) == 0) {
+            flag = SCSIAudioTrackFlagScms;
+        } else {
+            return false;
+        }
+        if(parsed & flag) return false;
+        parsed |= flag;
+        text = end;
+    }
+    if(!parsed) return false;
+    *flags = parsed;
     return true;
 }
 
@@ -239,9 +284,18 @@ static bool audio_cd_parse_cue(AudioCd* cd, const char* cue_path, FuriString* er
         if(audio_cd_keyword(line, "REM", &rest) || audio_cd_keyword(line, "TITLE", &rest) ||
            audio_cd_keyword(line, "PERFORMER", &rest) ||
            audio_cd_keyword(line, "SONGWRITER", &rest) ||
-           audio_cd_keyword(line, "CATALOG", &rest) || audio_cd_keyword(line, "ISRC", &rest) ||
-           audio_cd_keyword(line, "FLAGS", &rest)) {
+           audio_cd_keyword(line, "CATALOG", &rest) || audio_cd_keyword(line, "ISRC", &rest)) {
             continue;
+        } else if(audio_cd_keyword(line, "FLAGS", &rest)) {
+            AudioCdTrack* track = current_track >= 0 ? &cd->tracks[current_track] : NULL;
+            uint8_t flags;
+            if(!track || track->has_flags || !audio_cd_parse_flags(rest, &flags)) {
+                valid = false;
+                audio_cd_error(error, "Invalid or duplicate\nFLAGS in CUE");
+            } else {
+                track->flags = flags;
+                track->has_flags = true;
+            }
         } else if(audio_cd_keyword(line, "FILE", &rest)) {
             if(file_seen || !audio_cd_parse_file_name(rest, file_name)) {
                 valid = false;
@@ -469,6 +523,32 @@ static uint8_t audio_cd_track_at_lba(const AudioCd* cd, uint32_t lba, uint8_t* i
     return 1;
 }
 
+static int32_t audio_cd_apply_deemphasis(AudioCd* cd, int32_t sample, bool enabled) {
+    if(!enabled) {
+        cd->deemphasis_active = false;
+        return sample;
+    }
+    if(!cd->deemphasis_active) {
+        cd->deemphasis_active = true;
+        cd->deemphasis_input = sample;
+        cd->deemphasis_output = sample;
+        return sample;
+    }
+
+    int32_t output = (AUDIO_CD_DEEMPHASIS_INPUT_CURRENT * sample +
+                      AUDIO_CD_DEEMPHASIS_INPUT_PREVIOUS * cd->deemphasis_input +
+                      AUDIO_CD_DEEMPHASIS_OUTPUT_PREVIOUS * cd->deemphasis_output) /
+                     AUDIO_CD_DEEMPHASIS_SCALE;
+    if(output > INT16_MAX) {
+        output = INT16_MAX;
+    } else if(output < INT16_MIN) {
+        output = INT16_MIN;
+    }
+    cd->deemphasis_input = sample;
+    cd->deemphasis_output = output;
+    return output;
+}
+
 static void
     audio_cd_set_status(AudioCd* cd, SCSIAudioStatusCode status, uint32_t lba, uint32_t end_lba) {
     furi_mutex_acquire(cd->state_mutex, FuriWaitForever);
@@ -534,14 +614,32 @@ static bool audio_cd_fill_half(AudioCd* cd, uint8_t half) {
 
     uint32_t samples = raw_length / 4;
     uint8_t volume = audio_cd_get_volume(cd);
+    if(start != cd->deemphasis_next_offset) cd->deemphasis_active = false;
+    uint8_t index;
+    uint8_t track = audio_cd_track_at_lba(cd, start / AUDIO_CD_SECTOR_SIZE, &index) - 1;
+    uint64_t next_track_offset =
+        track + 1 < cd->track_count ?
+            (uint64_t)cd->tracks[track + 1].disc_index0 * AUDIO_CD_SECTOR_SIZE :
+            UINT64_MAX;
     for(uint32_t i = 0; i < samples; i++) {
+        uint64_t sample_offset = start + (uint64_t)i * 4;
+        while(track + 1 < cd->track_count && sample_offset >= next_track_offset) {
+            track++;
+            next_track_offset =
+                track + 1 < cd->track_count ?
+                    (uint64_t)cd->tracks[track + 1].disc_index0 * AUDIO_CD_SECTOR_SIZE :
+                    UINT64_MAX;
+        }
         const uint8_t* sample = cd->raw_buffer + i * 4;
         int16_t left = (uint16_t)sample[0] | (uint16_t)sample[1] << 8;
         int16_t right = (uint16_t)sample[2] | (uint16_t)sample[3] << 8;
         int32_t mono = left / 2 + right / 2;
+        mono = audio_cd_apply_deemphasis(
+            cd, mono, (cd->tracks[track].flags & SCSIAudioTrackFlagPreEmphasis) != 0);
         int32_t scaled = mono * (int32_t)volume / (int32_t)AUDIO_CD_VOLUME_MAX;
         output[i] = (scaled >> 8) + 128;
     }
+    cd->deemphasis_next_offset = start + raw_length;
     cd->half_valid[half] = samples;
 
     if(cd->scan_active && cd->scan_reverse) {
@@ -564,6 +662,8 @@ static bool
     cd->range_start_offset = reverse ? 0 : (uint64_t)start_lba * AUDIO_CD_SECTOR_SIZE;
     cd->range_end_offset = (uint64_t)end_lba * AUDIO_CD_SECTOR_SIZE;
     cd->source_offset = (uint64_t)start_lba * AUDIO_CD_SECTOR_SIZE;
+    cd->deemphasis_active = false;
+    cd->deemphasis_next_offset = cd->source_offset;
     if(!audio_cd_fill_half(cd, 0) || !audio_cd_fill_half(cd, 1)) return false;
     if(cd->half_valid[0] == 0) {
         audio_cd_set_status(cd, SCSIAudioStatusCompleted, start_lba, end_lba);
@@ -876,6 +976,7 @@ bool audio_cd_track_info(const AudioCd* cd, uint8_t track, SCSIAudioTrackInfo* i
 
     const AudioCdTrack* source = &cd->tracks[track - 1];
     info->number = track;
+    info->flags = source->flags;
     info->start_lba = source->disc_index1;
     info->index0_lba = source->disc_index0;
     info->has_index0 = track > 1 && source->disc_index0 < source->disc_index1;

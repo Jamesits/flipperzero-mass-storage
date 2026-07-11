@@ -55,8 +55,16 @@ typedef enum {
     SCSIAudioControlSeek,
 } SCSIAudioControl;
 
+typedef enum {
+    SCSIAudioTrackFlagPreEmphasis = 0x01,
+    SCSIAudioTrackFlagCopyPermitted = 0x02,
+    SCSIAudioTrackFlagFourChannel = 0x08,
+    SCSIAudioTrackFlagScms = 0x10, // CUE metadata, not part of the Q control nibble.
+} SCSIAudioTrackFlag;
+
 typedef struct {
     uint8_t number;
+    uint8_t flags;
     uint32_t start_lba;
     uint32_t end_lba;
     uint32_t index0_lba;
