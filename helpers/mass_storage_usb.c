@@ -38,8 +38,9 @@ typedef enum {
     EventExit = 1 << 0,
     EventReset = 1 << 1,
     EventRxTx = 1 << 2,
+    EventTxComplete = 1 << 3,
 
-    EventAll = EventExit | EventReset | EventRxTx,
+    EventAll = EventExit | EventReset | EventRxTx | EventTxComplete,
 } MassStorageEvent;
 
 typedef struct {
@@ -117,6 +118,7 @@ static int32_t mass_thread_worker(void* context) {
         StateBuildCSW,
         StateWaitBackground,
         StateWriteCSW,
+        StateWaitEjectCSW,
     };
     enum MassStorageState state = StateReadCBW;
     enum MassStorageState state_after_zlp = StateBuildCSW;
@@ -343,9 +345,19 @@ static int32_t mass_thread_worker(void* context) {
                     data_sent = 0;
                     state = StateReadCBW;
                     if(scsi.eject_pending) {
+                        // The eject callback may tear USB down, so wait until the host ACKs the CSW.
+                        state = StateWaitEjectCSW;
+                        break;
+                    }
+                    continue;
+                }; break;
+                case StateWaitEjectCSW: {
+                    if(!(flags & EventTxComplete)) break;
+                    FURI_LOG_T(TAG, "StateWaitEjectCSW");
+                    state = StateReadCBW;
+                    if(scsi.eject_pending) {
                         scsi.eject_pending = false;
                         scsi.fn.eject(scsi.fn.ctx);
-                        break;
                     }
                     continue;
                 }; break;
@@ -445,10 +457,11 @@ static void usb_suspend(usbd_device* dev) {
 
 static void usb_rxtx_ep_callback(usbd_device* dev, uint8_t event, uint8_t ep) {
     UNUSED(ep);
-    UNUSED(event);
     MassStorageUsb* mass = mass_cur;
     if(!mass || mass->dev != dev) return;
-    furi_thread_flags_set(furi_thread_get_id(mass->thread), EventRxTx);
+    uint32_t flags = EventRxTx;
+    if(event == usbd_evt_eptx) flags |= EventTxComplete;
+    furi_thread_flags_set(furi_thread_get_id(mass->thread), flags);
 }
 
 static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg) {
