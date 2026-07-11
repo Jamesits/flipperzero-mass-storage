@@ -538,7 +538,7 @@ static bool audio_cd_fill_half(AudioCd* cd, uint8_t half) {
         int16_t left = (uint16_t)sample[0] | (uint16_t)sample[1] << 8;
         int16_t right = (uint16_t)sample[2] | (uint16_t)sample[3] << 8;
         int32_t mono = left / 2 + right / 2;
-        int32_t scaled = mono * volume / AUDIO_CD_VOLUME_MAX;
+        int32_t scaled = mono * (int32_t)volume / (int32_t)AUDIO_CD_VOLUME_MAX;
         output[i] = (scaled >> 8) + 128;
     }
     cd->half_valid[half] = samples;
