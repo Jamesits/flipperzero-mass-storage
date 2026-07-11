@@ -7,6 +7,12 @@ static const char* device_type_names[MassStorageDeviceTypeCount] = {
     [MassStorageDeviceTypeOptical] = "Optical",
 };
 
+static const char* exit_on_eject_names[MassStorageExitOnEjectCount] = {
+    [MassStorageExitOnEjectOff] = "Off",
+    [MassStorageExitOnEjectDisk] = "Disk",
+    [MassStorageExitOnEjectUsb] = "USB",
+};
+
 static void mass_storage_settings_select(void* context, uint32_t index) {
     MassStorageApp* app = context;
     if(index == 0) {
@@ -23,7 +29,7 @@ static void mass_storage_read_only(VariableItem* item) {
 static void mass_storage_exit_on_eject(VariableItem* item) {
     MassStorageApp* app = variable_item_get_context(item);
     app->exit_on_eject = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, app->exit_on_eject ? "On" : "Off");
+    variable_item_set_current_value_text(item, exit_on_eject_names[app->exit_on_eject]);
 }
 
 static void mass_storage_device_type(VariableItem* item) {
@@ -50,7 +56,11 @@ void mass_storage_scene_settings_on_enter(void* context) {
         app);
 
     VariableItem* exit_on_eject_item = variable_item_list_add(
-        app->variable_item_list, "Exit on eject", 2, mass_storage_exit_on_eject, app);
+        app->variable_item_list,
+        "Exit on eject",
+        MassStorageExitOnEjectCount,
+        mass_storage_exit_on_eject,
+        app);
 
     VariableItem* device_type_item = variable_item_list_add(
         app->variable_item_list,
@@ -65,7 +75,8 @@ void mass_storage_scene_settings_on_enter(void* context) {
     variable_item_set_current_value_index(read_only_item, is_iso ? 0 : app->read_only);
     variable_item_set_current_value_text(read_only_item, app->read_only ? "On" : "Off");
     variable_item_set_current_value_index(exit_on_eject_item, app->exit_on_eject);
-    variable_item_set_current_value_text(exit_on_eject_item, app->exit_on_eject ? "On" : "Off");
+    variable_item_set_current_value_text(
+        exit_on_eject_item, exit_on_eject_names[app->exit_on_eject]);
     variable_item_set_current_value_index(device_type_item, is_iso ? 0 : app->device_type);
     variable_item_set_current_value_text(device_type_item, device_type_names[app->device_type]);
 

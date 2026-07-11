@@ -27,6 +27,13 @@
 #define MASS_STORAGE_MAX_FILE_PARTS       4
 #define MASS_STORAGE_FILE_PART_SIZE       (2ull * 1024 * 1024 * 1024)
 
+typedef enum {
+    MassStorageExitOnEjectOff, // never exit
+    MassStorageExitOnEjectDisk, // exit when the host ejects the disk (SCSI media eject)
+    MassStorageExitOnEjectUsb, // additionally exit when the host removes the USB device
+    MassStorageExitOnEjectCount,
+} MassStorageExitOnEject;
+
 struct MassStorageApp {
     Gui* gui;
     Storage* fs_api;
@@ -52,7 +59,7 @@ struct MassStorageApp {
     char new_file_name[MASS_STORAGE_FILE_NAME_LEN + 1];
     uint64_t new_file_size;
     bool read_only;
-    bool exit_on_eject;
+    MassStorageExitOnEject exit_on_eject;
     MassStorageDeviceType device_type;
 
     uint32_t bytes_read, bytes_written;

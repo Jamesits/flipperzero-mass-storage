@@ -33,6 +33,9 @@ typedef struct {
     uint32_t (*num_blocks)(void* ctx);
     bool (*sync)(void* ctx);
     void (*eject)(void* ctx);
+    // Called when the host tears down the USB device (SetConfiguration 0), as opposed
+    // to ejecting just the media via eject(). May be NULL.
+    void (*removed)(void* ctx);
     bool read_only;
     // Advertise removable media so the host offers eject (required for exit on eject).
     bool removable;

@@ -50,7 +50,7 @@ MassStorageApp* mass_storage_app_alloc(char* arg) {
     MassStorageApp* app = malloc(sizeof(MassStorageApp));
     app->file_path = furi_string_alloc();
     app->read_only = false;
-    app->exit_on_eject = true;
+    app->exit_on_eject = MassStorageExitOnEjectDisk;
     app->device_type = MassStorageDeviceTypeUsbSsd;
 
     if(arg != NULL) {
