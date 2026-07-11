@@ -21,7 +21,7 @@
 #include <mass_storage_icons.h>
 
 #define MASS_STORAGE_APP_PATH_FOLDER      STORAGE_APP_DATA_PATH_PREFIX
-#define MASS_STORAGE_APP_IMAGE_EXTENSIONS ".img|.iso|.cue"
+#define MASS_STORAGE_APP_IMAGE_EXTENSIONS ".img|.raw|.iso|.cue"
 #define MASS_STORAGE_APP_EXTENSION        ".img"
 #define MASS_STORAGE_ISO_EXTENSION        ".iso"
 #define MASS_STORAGE_CUE_EXTENSION        ".cue"

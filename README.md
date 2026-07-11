@@ -9,7 +9,6 @@ Features:
 - Supports >4GiB split images
 - Emulates SSD, HDD, FDD, CD-RW
 - Supports mounting disk images read-only
-- Supports ISO and BIN/CUE images (read-only only)
 - LED status indicator
 
 ## Performance
@@ -22,13 +21,23 @@ Features:
 
 ## Usage
 
+### Raw Disk Images
+
+`.img` and `.raw` files are emulated as block devices.
+
+### ISO Images
+
+`.iso` files are emulated as read-only optical disks.
+
 ### Audio CDs
 
-Select a `.cue` file whose `FILE` entry points to one companion binary `.bin`. The CUE sheet may
+`.cue`/`.bin` paired files are emulated as read-only audio optical disks. The CUE sheet may
 contain up to 99 `AUDIO` tracks, `INDEX 00/01` entries, and `PREGAP` entries. Multi-file and mixed-mode
-CUE sheets are rejected.
+CUE sheets are not supported.
 
-The work screen controls playback through the Flipper speaker and PA6 audio output:
+Audio CD playback is supported over both USB CD emulation and the Flipper's speaker / PA6 output..
+
+Flipper speaker / PA6 output controls:
 
 - OK: play/pause
 - Hold OK: stop
