@@ -3,6 +3,7 @@
 #include "mass_storage_app.h"
 #include "scenes/mass_storage_scene.h"
 #include "helpers/mass_storage_usb.h"
+#include "helpers/audio_cd.h"
 
 #include <furi_hal.h>
 #include <gui/gui.h>
@@ -20,9 +21,10 @@
 #include <mass_storage_icons.h>
 
 #define MASS_STORAGE_APP_PATH_FOLDER      STORAGE_APP_DATA_PATH_PREFIX
+#define MASS_STORAGE_APP_IMAGE_EXTENSIONS ".img|.iso|.cue"
 #define MASS_STORAGE_APP_EXTENSION        ".img"
-#define MASS_STORAGE_APP_IMAGE_EXTENSIONS ".img|.iso"
 #define MASS_STORAGE_ISO_EXTENSION        ".iso"
+#define MASS_STORAGE_CUE_EXTENSION        ".cue"
 #define MASS_STORAGE_FILE_NAME_LEN        40
 #define MASS_STORAGE_MAX_FILE_PARTS       4
 #define MASS_STORAGE_FILE_PART_SIZE       (2ull * 1024 * 1024 * 1024)
@@ -52,6 +54,7 @@ struct MassStorageApp {
     uint64_t file_offsets[MASS_STORAGE_MAX_FILE_PARTS];
     uint8_t file_count;
     MassStorage* mass_storage_view;
+    AudioCd* audio_cd;
 
     FuriMutex* usb_mutex;
     MassStorageUsb* usb;
@@ -67,6 +70,9 @@ struct MassStorageApp {
     uint16_t wipe_progress;
     bool led_blinking;
     bool wipe_active;
+    uint32_t audio_left_tick;
+    uint8_t audio_left_track;
+    uint8_t audio_selected_track;
 };
 
 typedef enum {

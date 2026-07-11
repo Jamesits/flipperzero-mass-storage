@@ -4,6 +4,8 @@
 
 struct MassStorage {
     View* view;
+    MassStorageInputCallback callback;
+    void* context;
 };
 
 typedef struct {
@@ -13,7 +15,92 @@ typedef struct {
     uint32_t update_time;
     uint16_t wipe_progress;
     bool wipe_active;
+    bool audio_mode;
+    SCSIAudioStatus audio_status;
+    uint8_t track_count;
+    uint32_t track_start;
+    uint32_t track_end;
 } MassStorageModel;
+
+static const char* mass_storage_audio_status_name(SCSIAudioStatusCode status) {
+    switch(status) {
+    case SCSIAudioStatusPlaying:
+        return "Playing";
+    case SCSIAudioStatusPaused:
+        return "Paused";
+    case SCSIAudioStatusCompleted:
+        return "Complete";
+    case SCSIAudioStatusError:
+        return "Audio error";
+    case SCSIAudioStatusStopped:
+        return "Stopped";
+    case SCSIAudioStatusNone:
+    default:
+        return "Ready";
+    }
+}
+
+static void mass_storage_draw_audio(Canvas* canvas, MassStorageModel* model) {
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str_aligned(
+        canvas, canvas_width(canvas) / 2, 0, AlignCenter, AlignTop, "Audio CD");
+
+    canvas_set_font(canvas, FontSecondary);
+    elements_string_fit_width(canvas, model->file_name, 120);
+    canvas_draw_str_aligned(
+        canvas, 64, 12, AlignCenter, AlignTop, furi_string_get_cstr(model->file_name));
+
+    furi_string_printf(
+        model->status_string,
+        "Track %u/%u  %s",
+        model->audio_status.track,
+        model->track_count,
+        mass_storage_audio_status_name(model->audio_status.status));
+    canvas_draw_str_aligned(
+        canvas, 64, 24, AlignCenter, AlignTop, furi_string_get_cstr(model->status_string));
+
+    uint32_t position = CLAMP(model->audio_status.lba, model->track_end, model->track_start);
+    uint32_t elapsed = (position - model->track_start) / AUDIO_CD_SECTORS_PER_SEC;
+    uint32_t duration = (model->track_end - model->track_start) / AUDIO_CD_SECTORS_PER_SEC;
+    furi_string_printf(
+        model->status_string,
+        "%02lu:%02lu / %02lu:%02lu",
+        elapsed / 60,
+        elapsed % 60,
+        duration / 60,
+        duration % 60);
+    canvas_draw_str_aligned(
+        canvas, 64, 35, AlignCenter, AlignTop, furi_string_get_cstr(model->status_string));
+
+    uint32_t range = model->track_end - model->track_start;
+    uint32_t progress = range ? (position - model->track_start) * 108 / range : 0;
+    canvas_draw_frame(canvas, 9, 46, 110, 5);
+    if(progress) canvas_draw_box(canvas, 10, 47, progress, 3);
+
+    // Previous track
+    canvas_draw_line(canvas, 20, 55, 20, 63);
+    canvas_draw_line(canvas, 21, 59, 27, 55);
+    canvas_draw_line(canvas, 21, 59, 27, 63);
+    canvas_draw_line(canvas, 28, 59, 34, 55);
+    canvas_draw_line(canvas, 28, 59, 34, 63);
+
+    // Play/pause
+    if(model->audio_status.status == SCSIAudioStatusPlaying) {
+        canvas_draw_box(canvas, 60, 55, 3, 9);
+        canvas_draw_box(canvas, 66, 55, 3, 9);
+    } else {
+        canvas_draw_line(canvas, 60, 55, 60, 63);
+        canvas_draw_line(canvas, 60, 55, 68, 59);
+        canvas_draw_line(canvas, 60, 63, 68, 59);
+    }
+
+    // Next track
+    canvas_draw_line(canvas, 108, 55, 108, 63);
+    canvas_draw_line(canvas, 107, 59, 101, 55);
+    canvas_draw_line(canvas, 107, 59, 101, 63);
+    canvas_draw_line(canvas, 100, 59, 94, 55);
+    canvas_draw_line(canvas, 100, 59, 94, 63);
+}
 
 static void append_suffixed_byte_count(FuriString* string, uint32_t count) {
     if(count < 1024) {
@@ -29,6 +116,11 @@ static void append_suffixed_byte_count(FuriString* string, uint32_t count) {
 
 static void mass_storage_draw_callback(Canvas* canvas, void* _model) {
     MassStorageModel* model = _model;
+
+    if(model->audio_mode) {
+        mass_storage_draw_audio(canvas, model);
+        return;
+    }
 
     canvas_draw_icon(canvas, 8, 14, &I_Drive_112x35);
 
@@ -72,8 +164,43 @@ static void mass_storage_draw_callback(Canvas* canvas, void* _model) {
     }
 }
 
+static bool mass_storage_input_callback(InputEvent* event, void* context) {
+    MassStorage* mass_storage = context;
+    if(!mass_storage->callback) return false;
+
+    MassStorageInput input;
+    bool consumed = true;
+    if(event->key == InputKeyOk && event->type == InputTypeShort) {
+        input = MassStorageInputPlayPause;
+    } else if(event->key == InputKeyOk && event->type == InputTypeLong) {
+        input = MassStorageInputStop;
+    } else if(event->key == InputKeyLeft && event->type == InputTypeShort) {
+        input = MassStorageInputPrevious;
+    } else if(event->key == InputKeyRight && event->type == InputTypeShort) {
+        input = MassStorageInputNext;
+    } else if(event->key == InputKeyLeft && event->type == InputTypeLong) {
+        input = MassStorageInputScanBackward;
+    } else if(event->key == InputKeyRight && event->type == InputTypeLong) {
+        input = MassStorageInputScanForward;
+    } else if(
+        (event->key == InputKeyLeft || event->key == InputKeyRight) &&
+        event->type == InputTypeRelease) {
+        input = MassStorageInputScanEnd;
+    } else if(
+        (event->key == InputKeyLeft || event->key == InputKeyRight || event->key == InputKeyOk) &&
+        (event->type == InputTypePress || event->type == InputTypeRepeat)) {
+        return true;
+    } else {
+        consumed = false;
+    }
+
+    if(consumed) mass_storage->callback(input, mass_storage->context);
+    return consumed;
+}
+
 MassStorage* mass_storage_alloc() {
     MassStorage* mass_storage = malloc(sizeof(MassStorage));
+    memset(mass_storage, 0, sizeof(MassStorage));
 
     mass_storage->view = view_alloc();
     view_allocate_model(mass_storage->view, ViewModelTypeLocking, sizeof(MassStorageModel));
@@ -87,6 +214,7 @@ MassStorage* mass_storage_alloc() {
         false);
     view_set_context(mass_storage->view, mass_storage);
     view_set_draw_callback(mass_storage->view, mass_storage_draw_callback);
+    view_set_input_callback(mass_storage->view, mass_storage_input_callback);
 
     return mass_storage;
 }
@@ -144,4 +272,36 @@ void mass_storage_set_wipe_progress(MassStorage* mass_storage, uint16_t progress
             model->wipe_active = active;
         },
         true);
+}
+
+void mass_storage_set_audio_mode(MassStorage* mass_storage, bool enabled) {
+    with_view_model(
+        mass_storage->view, MassStorageModel * model, { model->audio_mode = enabled; }, true);
+}
+
+void mass_storage_set_audio_status(
+    MassStorage* mass_storage,
+    const SCSIAudioStatus* status,
+    uint8_t track_count,
+    uint32_t track_start,
+    uint32_t track_end) {
+    furi_assert(status);
+    with_view_model(
+        mass_storage->view,
+        MassStorageModel * model,
+        {
+            model->audio_status = *status;
+            model->track_count = track_count;
+            model->track_start = track_start;
+            model->track_end = track_end;
+        },
+        true);
+}
+
+void mass_storage_set_input_callback(
+    MassStorage* mass_storage,
+    MassStorageInputCallback callback,
+    void* context) {
+    mass_storage->callback = callback;
+    mass_storage->context = context;
 }

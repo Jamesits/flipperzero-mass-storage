@@ -48,6 +48,7 @@ bool mass_storage_file_seek(File* file, uint64_t offset) {
 
 MassStorageApp* mass_storage_app_alloc(char* arg) {
     MassStorageApp* app = malloc(sizeof(MassStorageApp));
+    memset(app, 0, sizeof(MassStorageApp));
     app->file_path = furi_string_alloc();
     app->read_only = false;
     app->exit_on_eject = MassStorageExitOnEjectDisk;

@@ -41,7 +41,9 @@ static void mass_storage_device_type(VariableItem* item) {
 void mass_storage_scene_settings_on_enter(void* context) {
     MassStorageApp* app = context;
     bool is_iso = furi_string_end_withi(app->file_path, MASS_STORAGE_ISO_EXTENSION);
-    if(is_iso) {
+    bool is_cue = furi_string_end_withi(app->file_path, MASS_STORAGE_CUE_EXTENSION);
+    bool fixed_optical = is_iso || is_cue;
+    if(fixed_optical) {
         app->read_only = true;
         app->device_type = MassStorageDeviceTypeOptical;
     }
@@ -51,8 +53,8 @@ void mass_storage_scene_settings_on_enter(void* context) {
     VariableItem* read_only_item = variable_item_list_add(
         app->variable_item_list,
         "Read only",
-        is_iso ? 1 : 2,
-        is_iso ? NULL : mass_storage_read_only,
+        fixed_optical ? 1 : 2,
+        fixed_optical ? NULL : mass_storage_read_only,
         app);
 
     VariableItem* exit_on_eject_item = variable_item_list_add(
@@ -65,20 +67,21 @@ void mass_storage_scene_settings_on_enter(void* context) {
     VariableItem* device_type_item = variable_item_list_add(
         app->variable_item_list,
         "Report as",
-        is_iso ? 1 : MassStorageDeviceTypeCount,
-        is_iso ? NULL : mass_storage_device_type,
+        fixed_optical ? 1 : MassStorageDeviceTypeCount,
+        fixed_optical ? NULL : mass_storage_device_type,
         app);
 
     variable_item_list_set_enter_callback(
         app->variable_item_list, mass_storage_settings_select, app);
 
-    variable_item_set_current_value_index(read_only_item, is_iso ? 0 : app->read_only);
+    variable_item_set_current_value_index(read_only_item, fixed_optical ? 0 : app->read_only);
     variable_item_set_current_value_text(read_only_item, app->read_only ? "On" : "Off");
     variable_item_set_current_value_index(exit_on_eject_item, app->exit_on_eject);
     variable_item_set_current_value_text(
         exit_on_eject_item, exit_on_eject_names[app->exit_on_eject]);
-    variable_item_set_current_value_index(device_type_item, is_iso ? 0 : app->device_type);
-    variable_item_set_current_value_text(device_type_item, device_type_names[app->device_type]);
+    variable_item_set_current_value_index(device_type_item, fixed_optical ? 0 : app->device_type);
+    variable_item_set_current_value_text(
+        device_type_item, is_cue ? "Audio CD" : device_type_names[app->device_type]);
 
     mass_storage_app_show_loading_popup(app, false);
     view_dispatcher_switch_to_view(app->view_dispatcher, MassStorageAppViewStart);

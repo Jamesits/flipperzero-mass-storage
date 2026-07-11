@@ -11,11 +11,13 @@
 
 #define SCSI_ASC_LOGICAL_UNIT_NOT_READY          (0x04)
 #define SCSI_ASC_WRITE_ERROR                     (0x0C)
+#define SCSI_ASC_UNRECOVERED_READ_ERROR          (0x11)
 #define SCSI_ASC_INVALID_COMMAND_OPERATION_CODE  (0x20)
 #define SCSI_ASC_LBA_OOB                         (0x21)
 #define SCSI_ASC_INVALID_FIELD_IN_CDB            (0x24)
 #define SCSI_ASC_INVALID_FIELD_IN_PARAMETER_LIST (0x26)
 #define SCSI_ASC_WRITE_PROTECTED                 (0x27)
+#define SCSI_ASC_ILLEGAL_MODE_FOR_TRACK          (0x64)
 
 #define SCSI_ASCQ_OPERATION_IN_PROGRESS (0x07)
 
@@ -26,6 +28,42 @@ typedef enum {
     MassStorageDeviceTypeOptical,
     MassStorageDeviceTypeCount,
 } MassStorageDeviceType;
+
+typedef enum {
+    SCSIAudioStatusNone = 0x00,
+    SCSIAudioStatusPlaying = 0x11,
+    SCSIAudioStatusPaused = 0x12,
+    SCSIAudioStatusCompleted = 0x13,
+    SCSIAudioStatusError = 0x14,
+    SCSIAudioStatusStopped = 0x15,
+} SCSIAudioStatusCode;
+
+typedef enum {
+    SCSIAudioControlPlay,
+    SCSIAudioControlPause,
+    SCSIAudioControlResume,
+    SCSIAudioControlStop,
+    SCSIAudioControlScanForward,
+    SCSIAudioControlScanBackward,
+    SCSIAudioControlScanEnd,
+    SCSIAudioControlSeek,
+} SCSIAudioControl;
+
+typedef struct {
+    uint8_t number;
+    uint32_t start_lba;
+    uint32_t end_lba;
+    uint32_t index0_lba;
+    bool has_index0;
+} SCSIAudioTrackInfo;
+
+typedef struct {
+    SCSIAudioStatusCode status;
+    uint32_t lba;
+    uint32_t end_lba;
+    uint8_t track;
+    uint8_t index;
+} SCSIAudioStatus;
 
 typedef struct {
     void* ctx;
@@ -49,11 +87,17 @@ typedef struct {
     // Called on USB bus suspend, the closest signal to a physical port/cable disconnect
     // (the bus goes idle when unplugged). Also fires on host sleep. May be NULL.
     void (*suspended)(void* ctx);
+    uint8_t (*audio_track_count)(void* ctx);
+    bool (*audio_track_info)(void* ctx, uint8_t track, SCSIAudioTrackInfo* info);
+    bool (*audio_get_status)(void* ctx, SCSIAudioStatus* status);
+    bool (
+        *audio_control)(void* ctx, SCSIAudioControl control, uint32_t start_lba, uint32_t end_lba);
     bool read_only;
     // Advertise removable media so the host offers eject (required for exit on eject).
     bool removable;
     MassStorageDeviceType device_type;
     uint32_t block_size;
+    bool audio_cd;
     // The backing image already contains a formatted rewritable optical filesystem.
     bool optical_formatted;
 } SCSIDeviceFunc;
@@ -78,6 +122,7 @@ typedef struct {
         struct {
             uint32_t count;
             uint32_t lba;
+            uint32_t block_size;
         } read;
 
         struct {

@@ -22,8 +22,11 @@
 
 // Use larger transfers when the Flipper's shared heap allows it.
 // Sizes must be SCSI_BLOCK_SIZE aligned.
-#define USB_MSC_BUF_SIZE_MAX (16UL * 1024UL)
-#define USB_MSC_BUF_SIZE_MIN (4UL * 1024UL)
+#define USB_MSC_BUF_SIZE_MAX   (16UL * 1024UL)
+#define USB_MSC_BUF_SIZE_MIN   (4UL * 1024UL)
+// Four raw audio sectors are also exactly 147 full-speed USB packets. This prevents a short
+// packet from terminating a multi-chunk READ CD transfer before its final data chunk.
+#define USB_MSC_AUDIO_BUF_SIZE (4UL * 2352UL)
 
 static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg);
 static usbd_respond usb_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback);
@@ -63,8 +66,20 @@ struct MassStorageUsb {
     bool configured;
 };
 
-static bool mass_storage_ensure_buffer(uint8_t** buffer, uint32_t* capacity) {
+static bool mass_storage_ensure_buffer(uint8_t** buffer, uint32_t* capacity, bool audio_cd) {
     if(*buffer) return true;
+
+    if(audio_cd) {
+        *capacity = USB_MSC_AUDIO_BUF_SIZE;
+        *buffer = malloc(*capacity);
+        if(*buffer) {
+            FURI_LOG_D(TAG, "allocated %lu-byte audio transfer buffer", *capacity);
+            return true;
+        }
+        *capacity = 0;
+        FURI_LOG_E(TAG, "failed to allocate audio transfer buffer");
+        return false;
+    }
 
     for(*capacity = USB_MSC_BUF_SIZE_MAX; *capacity >= USB_MSC_BUF_SIZE_MIN; *capacity /= 2) {
         *buffer = malloc(*capacity);
@@ -149,7 +164,10 @@ static int32_t mass_thread_worker(void* context) {
                            cbw.len,
                            cbw.flags & CBW_FLAGS_DEVICE_TO_HOST)) {
                         FURI_LOG_W(TAG, "bad cmd");
-                        usbd_ep_stall(dev, USB_MSC_RX_EP);
+                        bool data_out = !(cbw.flags & CBW_FLAGS_DEVICE_TO_HOST) && cbw.len;
+                        if(scsi.phase_error || data_out) {
+                            usbd_ep_stall(dev, USB_MSC_RX_EP);
+                        }
                         csw.sig = CSW_SIG;
                         csw.tag = cbw.tag;
                         csw.status = scsi.phase_error ? CSW_STATUS_PHASE_ERROR : CSW_STATUS_NOK;
@@ -163,7 +181,7 @@ static int32_t mass_thread_worker(void* context) {
                         continue;
                     }
                     data_sent = 0;
-                    if(cbw.len && !mass_storage_ensure_buffer(&buf, &buf_cap)) {
+                    if(cbw.len && !mass_storage_ensure_buffer(&buf, &buf_cap, mass->fn.audio_cd)) {
                         usbd_ep_stall(dev, USB_MSC_TX_EP);
                         usbd_ep_stall(dev, USB_MSC_RX_EP);
                         continue;
@@ -228,6 +246,16 @@ static int32_t mass_thread_worker(void* context) {
                         }
                         continue;
                     }
+                    if(!buf_len) {
+                        FURI_LOG_E(TAG, "SCSI TX made no progress");
+                        if(data_sent % USB_MSC_TX_EP_SIZE) {
+                            state = StateBuildCSW;
+                        } else {
+                            state_after_zlp = StateBuildCSW;
+                            state = StateWriteZlp;
+                        }
+                        continue;
+                    }
                     int32_t len = usbd_ep_write(
                         dev,
                         USB_MSC_TX_EP,
@@ -259,7 +287,7 @@ static int32_t mass_thread_worker(void* context) {
                     csw.tag = cbw.tag;
                     bool command_ok = scsi_cmd_end(&scsi);
                     if(command_ok && scsi_blank_in_progress(&scsi) &&
-                       !mass_storage_ensure_buffer(&buf, &buf_cap)) {
+                       !mass_storage_ensure_buffer(&buf, &buf_cap, mass->fn.audio_cd)) {
                         scsi_blank_step(&scsi, NULL, 0);
                         command_ok = false;
                     }
@@ -322,7 +350,7 @@ static int32_t mass_thread_worker(void* context) {
             } while(true);
 
         if(scsi_blank_in_progress(&scsi)) {
-            if(!mass_storage_ensure_buffer(&buf, &buf_cap)) {
+            if(!mass_storage_ensure_buffer(&buf, &buf_cap, mass->fn.audio_cd)) {
                 scsi_blank_step(&scsi, NULL, 0);
             } else {
                 scsi_blank_step(&scsi, buf, buf_cap);
