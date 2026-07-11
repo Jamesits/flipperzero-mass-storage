@@ -11,6 +11,9 @@ Features:
 - Supports mounting disk images read-only
 - LED status indicator
 
+![USB Mass Storage status display](.catalog/screenshots/1.png)
+![Audio CD playback display](.catalog/screenshots/2.png)
+
 ## Performance
 
 - Sequence, 1M blocks, Q1T1, 100% read: 0.21MiB/s
