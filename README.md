@@ -50,7 +50,7 @@ Hosts can also control playback with the MMC play, pause/resume, stop, seek, and
 
 ## Development
 
-Building:
+Building: Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
 
 ```shell
 uvx ufbt
