@@ -64,6 +64,7 @@ struct MassStorageUsb {
     usbd_device* dev;
     SCSIDeviceFunc fn;
     bool configured;
+    bool connected;
 };
 
 static bool mass_storage_ensure_buffer(uint8_t** buffer, uint32_t* capacity, bool audio_cd) {
@@ -367,6 +368,12 @@ static int32_t mass_thread_worker(void* context) {
 // where if_ctx isn't passed
 static MassStorageUsb* mass_cur = NULL;
 
+static void mass_storage_usb_set_connected(MassStorageUsb* mass, bool connected) {
+    if(mass->connected == connected) return;
+    mass->connected = connected;
+    if(mass->fn.connection_changed) mass->fn.connection_changed(mass->fn.ctx, connected);
+}
+
 static void usb_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx) {
     UNUSED(intf);
     MassStorageUsb* mass = ctx;
@@ -410,7 +417,10 @@ static void usb_deinit(usbd_device* dev) {
 }
 
 static void usb_wakeup(usbd_device* dev) {
-    UNUSED(dev);
+    MassStorageUsb* mass = mass_cur;
+    if(mass && mass->dev == dev && mass->configured) {
+        mass_storage_usb_set_connected(mass, true);
+    }
 }
 
 static void usb_suspend(usbd_device* dev) {
@@ -420,7 +430,10 @@ static void usb_suspend(usbd_device* dev) {
     // the bus goes idle when the cable is pulled. It also fires when the host merely sleeps,
     // so acting on it is left to the app via "Exit on eject" (only USB mode exits on it).
     // Only report it once configured to skip idle suspends seen during enumeration.
-    if(mass->configured && mass->fn.suspended) mass->fn.suspended(mass->fn.ctx);
+    if(mass->configured) {
+        mass_storage_usb_set_connected(mass, false);
+        if(mass->fn.suspended) mass->fn.suspended(mass->fn.ctx);
+    }
     furi_thread_flags_set(furi_thread_get_id(mass->thread), EventReset);
 }
 
@@ -445,6 +458,7 @@ static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg) {
         // arrive before we were ever configured (e.g. during enumeration).
         if(mass && mass->dev == dev && mass->configured) {
             mass->configured = false;
+            mass_storage_usb_set_connected(mass, false);
             if(mass->fn.removed) mass->fn.removed(mass->fn.ctx);
         }
         return usbd_ack;
@@ -454,7 +468,10 @@ static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg) {
         usbd_ep_config(dev, USB_MSC_TX_EP, USB_EPTYPE_BULK, USB_MSC_TX_EP_SIZE);
         usbd_reg_endpoint(dev, USB_MSC_RX_EP, usb_rxtx_ep_callback);
         usbd_reg_endpoint(dev, USB_MSC_TX_EP, usb_rxtx_ep_callback);
-        if(mass && mass->dev == dev) mass->configured = true;
+        if(mass && mass->dev == dev) {
+            mass->configured = true;
+            mass_storage_usb_set_connected(mass, true);
+        }
         return usbd_ack;
     }
     return usbd_fail;
@@ -586,6 +603,7 @@ MassStorageUsb* mass_storage_usb_start(const char* filename, SCSIDeviceFunc fn) 
 
     mass->fn = fn;
     mass->configured = false;
+    mass->connected = false;
     if(!furi_hal_usb_set_config(&mass->usb, mass)) {
         FURI_LOG_E(TAG, "USB locked, cannot start Mass Storage");
         free(mass->usb.str_prod_descr);

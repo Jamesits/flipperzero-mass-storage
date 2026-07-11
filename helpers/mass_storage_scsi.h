@@ -94,6 +94,9 @@ typedef struct {
     // Called on USB bus suspend, the closest signal to a physical port/cable disconnect
     // (the bus goes idle when unplugged). Also fires on host sleep. May be NULL.
     void (*suspended)(void* ctx);
+    // Called when the USB device becomes configured, suspended, resumed, or deconfigured.
+    // May be NULL.
+    void (*connection_changed)(void* ctx, bool connected);
     uint8_t (*audio_track_count)(void* ctx);
     bool (*audio_track_info)(void* ctx, uint8_t track, SCSIAudioTrackInfo* info);
     bool (*audio_get_status)(void* ctx, SCSIAudioStatus* status);

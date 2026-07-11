@@ -196,6 +196,26 @@ static void file_eject(void* ctx) {
     }
 }
 
+static void file_connection_changed(void* ctx, bool connected) {
+    MassStorageApp* app = ctx;
+    furi_mutex_acquire(app->usb_mutex, FuriWaitForever);
+    app->usb_connected = connected;
+    furi_mutex_release(app->usb_mutex);
+}
+
+static bool mass_storage_usb_is_connected(MassStorageApp* app) {
+    furi_mutex_acquire(app->usb_mutex, FuriWaitForever);
+    bool connected = app->usb_connected;
+    furi_mutex_release(app->usb_mutex);
+    return connected;
+}
+
+static void mass_storage_set_idle_led(MassStorageApp* app, bool usb_connected) {
+    notification_message(
+        app->notifications, usb_connected ? &sequence_set_only_blue_255 : &sequence_solid_yellow);
+    app->led_usb_connected = usb_connected;
+}
+
 static void file_removed(void* ctx) {
     MassStorageApp* app = ctx;
     FURI_LOG_D(TAG, "USB REMOVED");
@@ -301,6 +321,7 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
             }
         }
     } else if(event.type == SceneManagerEventTypeTick) {
+        bool usb_connected = mass_storage_usb_is_connected(app);
         if(app->audio_cd) {
             mass_storage_update_audio_view(app);
         } else {
@@ -317,10 +338,11 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
             app->led_bytes_read = app->bytes_read;
             app->led_bytes_written = app->bytes_written;
         } else if(app->led_blinking) {
-            // Idle: stop the read/write blink and show a steady blue.
             notification_message(app->notifications, &sequence_blink_stop);
-            notification_message(app->notifications, &sequence_set_only_blue_255);
+            mass_storage_set_idle_led(app, usb_connected);
             app->led_blinking = false;
+        } else if(app->led_usb_connected != usb_connected) {
+            mass_storage_set_idle_led(app, usb_connected);
         }
     } else if(event.type == SceneManagerEventTypeBack) {
         consumed = scene_manager_search_and_switch_to_previous_scene(
@@ -354,6 +376,8 @@ void mass_storage_scene_work_on_enter(void* context) {
     app->led_bytes_read = app->led_bytes_written = 0;
     app->wipe_progress = 0;
     app->led_blinking = false;
+    app->usb_connected = false;
+    app->led_usb_connected = false;
     app->wipe_active = false;
     mass_storage_set_wipe_progress(app->mass_storage_view, 0, false);
 
@@ -428,6 +452,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .wipe_progress = file_wipe_progress,
         .removed = file_removed,
         .suspended = file_suspended,
+        .connection_changed = file_connection_changed,
         .audio_track_count = file_audio_track_count,
         .audio_track_info = file_audio_track_info,
         .audio_get_status = file_audio_get_status,
@@ -455,8 +480,8 @@ void mass_storage_scene_work_on_enter(void* context) {
 
     furi_string_free(file_name);
 
-    // Disk enabled but idle: steady blue, no flashing.
-    notification_message(app->notifications, &sequence_set_only_blue_255);
+    // Disk enabled but awaiting a host: yellow. Connected and idle: blue.
+    mass_storage_set_idle_led(app, mass_storage_usb_is_connected(app));
 
     if(app->audio_cd) {
         mass_storage_set_audio_mode(app->mass_storage_view, true);
@@ -477,7 +502,7 @@ void mass_storage_scene_work_on_exit(void* context) {
         notification_message(app->notifications, &sequence_blink_stop);
         app->led_blinking = false;
     }
-    // Clear the steady blue (or any leftover color) shown while enabled.
+    // Clear the steady idle color (or any leftover color) shown while enabled.
     notification_message(app->notifications, &sequence_reset_rgb);
 
     if(app->usb) {

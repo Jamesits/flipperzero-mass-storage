@@ -69,6 +69,8 @@ struct MassStorageApp {
     uint32_t led_bytes_read, led_bytes_written;
     uint16_t wipe_progress;
     bool led_blinking;
+    bool usb_connected;
+    bool led_usb_connected;
     bool wipe_active;
     uint32_t audio_left_tick;
     uint8_t audio_left_track;
