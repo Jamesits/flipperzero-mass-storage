@@ -7,10 +7,11 @@
 #define SCSI_SK_ILLEGAL_REQUEST (5)
 #define SCSI_SK_DATA_PROTECT    (7)
 
-#define SCSI_ASC_INVALID_COMMAND_OPERATION_CODE (0x20)
-#define SCSI_ASC_LBA_OOB                        (0x21)
-#define SCSI_ASC_INVALID_FIELD_IN_CDB           (0x24)
-#define SCSI_ASC_WRITE_PROTECTED                (0x27)
+#define SCSI_ASC_INVALID_COMMAND_OPERATION_CODE  (0x20)
+#define SCSI_ASC_LBA_OOB                         (0x21)
+#define SCSI_ASC_INVALID_FIELD_IN_CDB            (0x24)
+#define SCSI_ASC_INVALID_FIELD_IN_PARAMETER_LIST (0x26)
+#define SCSI_ASC_WRITE_PROTECTED                 (0x27)
 
 typedef enum {
     MassStorageDeviceTypeUsbSsd,
@@ -77,7 +78,9 @@ typedef struct {
         } mode_select;
 
         struct {
-            uint16_t remaining;
+            uint32_t total;
+            uint32_t remaining;
+            uint8_t parameters[12];
         } format;
 
         struct {
@@ -87,6 +90,8 @@ typedef struct {
 
     uint32_t next_writable_lba;
     uint32_t reserved_blocks;
+    uint32_t formatted_blocks;
+    uint32_t optical_packet_size;
     bool optical_open;
     bool optical_finalized;
     bool optical_formatted;
