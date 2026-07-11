@@ -351,9 +351,11 @@ static void usb_wakeup(usbd_device* dev) {
 static void usb_suspend(usbd_device* dev) {
     MassStorageUsb* mass = mass_cur;
     if(!mass || mass->dev != dev) return;
-    // Bus suspend is deliberately not treated as USB removal: the host suspends the bus on
-    // its own sleep as well as on eject, so "Exit on eject: USB" keys off deconfigure
-    // (SetConfiguration 0) in usb_ep_config() instead to avoid exiting when the host sleeps.
+    // Bus suspend is the closest signal to a physical port/cable disconnect the device sees:
+    // the bus goes idle when the cable is pulled. It also fires when the host merely sleeps,
+    // so acting on it is left to the app via "Exit on eject" (only USB mode exits on it).
+    // Only report it once configured to skip idle suspends seen during enumeration.
+    if(mass->configured && mass->fn.suspended) mass->fn.suspended(mass->fn.ctx);
     furi_thread_flags_set(furi_thread_get_id(mass->thread), EventReset);
 }
 

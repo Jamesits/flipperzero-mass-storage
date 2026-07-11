@@ -36,6 +36,9 @@ typedef struct {
     // Called when the host tears down the USB device (SetConfiguration 0), as opposed
     // to ejecting just the media via eject(). May be NULL.
     void (*removed)(void* ctx);
+    // Called on USB bus suspend, the closest signal to a physical port/cable disconnect
+    // (the bus goes idle when unplugged). Also fires on host sleep. May be NULL.
+    void (*suspended)(void* ctx);
     bool read_only;
     // Advertise removable media so the host offers eject (required for exit on eject).
     bool removable;

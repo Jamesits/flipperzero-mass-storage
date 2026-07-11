@@ -129,6 +129,15 @@ static void file_removed(void* ctx) {
     }
 }
 
+static void file_suspended(void* ctx) {
+    MassStorageApp* app = ctx;
+    FURI_LOG_D(TAG, "USB SUSPEND");
+    // Suspend approximates a physical port disconnect; exit only in USB mode.
+    if(app->exit_on_eject == MassStorageExitOnEjectUsb) {
+        view_dispatcher_send_custom_event(app->view_dispatcher, MassStorageCustomEventEject);
+    }
+}
+
 bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
     MassStorageApp* app = context;
     bool consumed = false;
@@ -223,6 +232,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .sync = file_sync,
         .eject = file_eject,
         .removed = file_removed,
+        .suspended = file_suspended,
         .read_only = read_only,
         // Removable media is a prerequisite for the host to send an eject command.
         .removable = app->exit_on_eject != MassStorageExitOnEjectOff,
