@@ -30,6 +30,40 @@ static bool file_prepare_part(
     return true;
 }
 
+static bool file_has_udf_volume_recognition_sequence(MassStorageApp* app) {
+    bool beginning_found = false;
+    uint8_t identifier[5];
+
+    // ECMA-167 places the Volume Recognition Sequence at sector 16 or later. UDF uses
+    // BEA01 followed by NSR02/NSR03 and terminates the sequence with TEA01.
+    for(uint32_t lba = 16; lba < 32; lba++) {
+        File* file;
+        uint8_t part;
+        uint64_t part_offset;
+        uint64_t offset = (uint64_t)lba * 2048 + 1;
+        if(!file_prepare_part(app, offset, &file, &part, &part_offset) ||
+           app->file_sizes[part] - part_offset < sizeof(identifier)) {
+            return false;
+        }
+
+        uint32_t bytes_read = storage_file_read(file, identifier, sizeof(identifier));
+        app->file_offsets[part] += bytes_read;
+        if(bytes_read != sizeof(identifier)) return false;
+
+        if(!memcmp(identifier, "BEA01", sizeof(identifier))) {
+            beginning_found = true;
+        } else if(
+            beginning_found && (!memcmp(identifier, "NSR02", sizeof(identifier)) ||
+                                !memcmp(identifier, "NSR03", sizeof(identifier)))) {
+            return true;
+        } else if(beginning_found && !memcmp(identifier, "TEA01", sizeof(identifier))) {
+            return false;
+        }
+    }
+
+    return false;
+}
+
 static bool file_read(
     void* ctx,
     uint32_t lba,
@@ -237,6 +271,12 @@ void mass_storage_scene_work_on_enter(void* context) {
     }
     furi_string_free(part_path);
 
+    bool optical_formatted = app->device_type == MassStorageDeviceTypeOptical && !read_only &&
+                             file_has_udf_volume_recognition_sequence(app);
+    if(optical_formatted) {
+        FURI_LOG_I(TAG, "restored formatted optical state from UDF image");
+    }
+
     SCSIDeviceFunc fn = {
         .ctx = app,
         .read = file_read,
@@ -252,6 +292,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .removable = app->exit_on_eject != MassStorageExitOnEjectOff,
         .device_type = app->device_type,
         .block_size = mass_storage_block_size(app),
+        .optical_formatted = optical_formatted,
     };
 
     app->usb = mass_storage_usb_start(furi_string_get_cstr(file_name), fn);

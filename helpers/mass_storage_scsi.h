@@ -54,6 +54,8 @@ typedef struct {
     bool removable;
     MassStorageDeviceType device_type;
     uint32_t block_size;
+    // The backing image already contains a formatted rewritable optical filesystem.
+    bool optical_formatted;
 } SCSIDeviceFunc;
 
 typedef struct {
@@ -119,6 +121,7 @@ typedef struct {
 } SCSISession;
 
 bool scsi_is_usb_disk(MassStorageDeviceType device_type);
+void scsi_session_init(SCSISession* scsi, SCSIDeviceFunc fn);
 
 bool scsi_cmd_start(
     SCSISession* scsi,

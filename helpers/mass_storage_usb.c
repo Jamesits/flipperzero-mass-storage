@@ -82,9 +82,8 @@ static bool mass_storage_ensure_buffer(uint8_t** buffer, uint32_t* capacity) {
 static int32_t mass_thread_worker(void* context) {
     MassStorageUsb* mass = context;
     usbd_device* dev = mass->dev;
-    SCSISession scsi = {
-        .fn = mass->fn,
-    };
+    SCSISession scsi;
+    scsi_session_init(&scsi, mass->fn);
     CBW cbw = {0};
     CSW csw = {0};
     uint8_t* buf = NULL;

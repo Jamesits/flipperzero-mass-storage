@@ -69,6 +69,18 @@ bool scsi_is_usb_disk(MassStorageDeviceType device_type) {
            device_type == MassStorageDeviceTypeUsbHdd;
 }
 
+void scsi_session_init(SCSISession* scsi, SCSIDeviceFunc fn) {
+    memset(scsi, 0, sizeof(SCSISession));
+    scsi->fn = fn;
+
+    if(fn.device_type == MassStorageDeviceTypeOptical && fn.optical_formatted) {
+        uint32_t blocks = fn.num_blocks(fn.ctx);
+        scsi->formatted_blocks = blocks - blocks % CD_RW_PACKET_SIZE;
+        scsi->optical_packet_size = CD_RW_PACKET_SIZE;
+        scsi->optical_formatted = true;
+    }
+}
+
 static bool scsi_tx_response(
     SCSISession* scsi,
     uint8_t* data,
@@ -1407,6 +1419,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
             scsi_blank_cancel(scsi);
         }
         if(eject && !start) {
+            if(!scsi->fn.sync(scsi->fn.ctx)) return false;
             scsi->eject_pending = true;
         }
         return true;
