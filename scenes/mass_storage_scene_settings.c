@@ -163,8 +163,8 @@ bool mass_storage_scene_settings_on_event(void* context, SceneManagerEvent event
     bool consumed = false;
 
     if(event.type == SceneManagerEventTypeCustom && event.event == MassStorageCustomEventStart) {
+        mass_storage_save_mount_options(app);
         if(!furi_hal_usb_is_locked()) {
-            mass_storage_save_mount_options(app);
             scene_manager_next_scene(app->scene_manager, MassStorageSceneWork);
         } else {
             scene_manager_next_scene(app->scene_manager, MassStorageSceneUsbLocked);

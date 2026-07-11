@@ -22,7 +22,10 @@ bool mass_storage_scene_usb_locked_on_event(void* context, SceneManagerEvent eve
     MassStorageApp* app = context;
     bool consumed = false;
 
-    if(event.type == SceneManagerEventTypeBack) {
+    if(event.type == SceneManagerEventTypeTick && !furi_hal_usb_is_locked()) {
+        scene_manager_next_scene(app->scene_manager, MassStorageSceneWork);
+        consumed = true;
+    } else if(event.type == SceneManagerEventTypeBack) {
         consumed = scene_manager_search_and_switch_to_previous_scene(
             app->scene_manager, MassStorageSceneSettings);
         if(!consumed) {
