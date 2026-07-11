@@ -5,17 +5,26 @@
 
 #define TAG "MassStorageSCSI"
 
+#define PERFORMANCE_START 250 // KB/s
+#define PERFORMANCE_END   250 // KB/s
+
 #define SCSI_TEST_UNIT_READY        (0x00)
 #define SCSI_REZERO_UNIT            (0x01)
 #define SCSI_REQUEST_SENSE          (0x03)
 #define SCSI_FORMAT_UNIT            (0x04)
 #define SCSI_INQUIRY                (0x12)
+#define SCSI_MODE_SENSE_6           (0x1A)
+#define SCSI_START_STOP_UNIT        (0x1B)
+#define SCSI_SEND_DIAGNOSTIC        (0x1D)
+#define SCSI_PREVENT_MEDIUM_REMOVAL (0x1E)
 #define SCSI_READ_FORMAT_CAPACITIES (0x23)
 #define SCSI_READ_CAPACITY_10       (0x25)
-#define SCSI_MODE_SENSE_6           (0x1A)
 #define SCSI_READ_10                (0x28)
+#define SCSI_WRITE_10               (0x2A)
+#define SCSI_SEEK_10                (0x2B)
 #define SCSI_VERIFY_10              (0x2F)
 #define SCSI_SYNCHRONIZE_CACHE_10   (0x35)
+#define SCSI_READ_SUB_CHANNEL       (0x42)
 #define SCSI_READ_TOC               (0x43)
 #define SCSI_READ_HEADER            (0x44)
 #define SCSI_GET_CONFIGURATION      (0x46)
@@ -26,14 +35,14 @@
 #define SCSI_MODE_SELECT_10         (0x55)
 #define SCSI_MODE_SENSE_10          (0x5A)
 #define SCSI_CLOSE_TRACK_SESSION    (0x5B)
+#define SCSI_READ_BUFFER_CAPACITY   (0x5C)
 #define SCSI_SEND_CUE_SHEET         (0x5D)
+#define SCSI_BLANK                  (0xA1)
 #define SCSI_READ_12                (0xA8)
 #define SCSI_WRITE_12               (0xAA)
+#define SCSI_GET_PERFORMANCE        (0xAC)
 #define SCSI_SET_CD_SPEED           (0xBB)
-#define SCSI_BLANK                  (0xA1)
-#define SCSI_PREVENT_MEDIUM_REMOVAL (0x1E)
-#define SCSI_START_STOP_UNIT        (0x1B)
-#define SCSI_WRITE_10               (0x2A)
+#define SCSI_MECHANISM_STATUS       (0xBD)
 #define SCSI_READ_CD                (0xBE)
 
 static const uint8_t scsi_peripheral_device_type[MassStorageDeviceTypeCount] = {
@@ -768,6 +777,97 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         }
         return result;
     }; break;
+    case SCSI_READ_SUB_CHANNEL: {
+        FURI_LOG_D(TAG, "SCSI_READ_SUB_CHANNEL");
+        if(scsi->cmd_len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
+            return false;
+        }
+        bool msf = scsi->cmd[1] & 0x02;
+        bool subq = scsi->cmd[2] & 0x40;
+        uint8_t format = scsi->cmd[3];
+        // Sub-channel data header. Byte 1 is audio status: we never play audio, so 0x00
+        // ("no status"). Bytes 2..3 hold the length of the sub-channel data that follows.
+        uint8_t response[24] = {0};
+        uint8_t response_len = 4;
+        if(subq) {
+            if(format == 0x01) {
+                // Current position: report the idle head at LBA 0 on the single Mode 1 data
+                // track (byte 5 = ADR 1 / control 4).
+                response[4] = 0x01;
+                response[5] = 0x14;
+                response[6] = 0x01; // track number
+                response[7] = 0x01; // index
+                scsi_store_cdrom_address(response + 8, 0, msf); // absolute address
+                scsi_store_cdrom_address(response + 12, 0, msf); // track-relative address
+                response_len = 16;
+            } else if(format == 0x02 || format == 0x03) {
+                // Media catalog number / track ISRC: none recorded, so leave the valid bit
+                // (byte 8, bit 7) clear and return the zeroed identifier fields.
+                response[4] = format;
+                response_len = 24;
+            } else {
+                scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+                scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+                return false;
+            }
+        }
+        response[2] = (response_len - 4) >> 8;
+        response[3] = response_len - 4;
+        return scsi_tx_response(scsi, data, len, cap, response, response_len);
+    }; break;
+    case SCSI_READ_BUFFER_CAPACITY: {
+        FURI_LOG_D(TAG, "SCSI_READ_BUFFER_CAPACITY");
+        if(scsi->cmd_len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
+            return false;
+        }
+        // Writes are consumed straight into the backing file, so the recording buffer is
+        // effectively always empty. Advertise a fixed buffer that is entirely available so a
+        // burner never throttles waiting for buffer space. The Block bit (byte 1 bit 0)
+        // selects whether the lengths are counted in blocks or bytes.
+        bool in_blocks = scsi->cmd[1] & 0x01;
+        uint32_t buffer_bytes = 0x40000; // 256 KiB
+        uint32_t buffer = in_blocks ? buffer_bytes / scsi->fn.block_size : buffer_bytes;
+        uint8_t response[12] = {0};
+        response[1] = 0x0A; // data length (10)
+        response[3] = in_blocks ? 0x01 : 0x00;
+        scsi_store_be32(response + 4, buffer); // total buffer length
+        scsi_store_be32(response + 8, buffer); // blank (available) buffer length
+        return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+    }; break;
+    case SCSI_GET_PERFORMANCE: {
+        FURI_LOG_D(TAG, "SCSI_GET_PERFORMANCE");
+        if(scsi->cmd_len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
+            return false;
+        }
+        uint8_t type = scsi->cmd[10];
+        uint16_t max_desc = scsi->cmd[8] << 8 | scsi->cmd[9];
+        uint8_t response[24] = {0};
+        uint8_t response_len = 8; // performance data header
+        // Only nominal performance (type 0) is described. The host caps the descriptor count
+        // in bytes 8..9; Windows probes with a count of 0 to fetch just the header. When a
+        // descriptor is wanted, report one flat region spanning the disc at our 2x rate.
+        if(type == 0x00 && max_desc >= 1) {
+            uint32_t last_lba = scsi->fn.num_blocks(scsi->fn.ctx) - 1;
+            scsi_store_be32(response + 8, 0); // start LBA
+            scsi_store_be32(response + 12, PERFORMANCE_START); // start performance
+            scsi_store_be32(response + 16, last_lba); // end LBA
+            scsi_store_be32(response + 20, PERFORMANCE_END); // end performance
+            response_len = 24;
+        }
+        scsi_store_be32(response, response_len - 4); // performance data length
+        return scsi_tx_response(scsi, data, len, cap, response, response_len);
+    }; break;
+    case SCSI_MECHANISM_STATUS: {
+        FURI_LOG_D(TAG, "SCSI_MECHANISM_STATUS");
+        if(scsi->cmd_len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
+            return false;
+        }
+        // Single-slot, non-changer mechanism, idle and fault-free: every field is zero except
+        // the slot count. No slot tables follow (bytes 6..7 = 0).
+        uint8_t response[8] = {0};
+        response[5] = 0x01; // number of slots available
+        return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+    }; break;
     default: {
         FURI_LOG_W(TAG, "unexpected scsi tx data cmd=%02X", scsi->cmd[0]);
         scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
@@ -805,6 +905,10 @@ bool scsi_cmd_end(SCSISession* scsi) {
     case SCSI_READ_10:
     case SCSI_READ_12:
     case SCSI_READ_CD:
+    case SCSI_READ_SUB_CHANNEL:
+    case SCSI_READ_BUFFER_CAPACITY:
+    case SCSI_GET_PERFORMANCE:
+    case SCSI_MECHANISM_STATUS:
         return scsi->tx_done;
 
     case SCSI_TEST_UNIT_READY: {
@@ -899,6 +1003,31 @@ bool scsi_cmd_end(SCSISession* scsi) {
     case SCSI_SET_CD_SPEED: {
         FURI_LOG_D(TAG, "SCSI_SET_CD_SPEED");
         return scsi->fn.device_type == MassStorageDeviceTypeOptical;
+    }; break;
+    case SCSI_SEEK_10: {
+        if(len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        uint32_t lba = scsi_read_be32(cmd + 2);
+        FURI_LOG_D(TAG, "SCSI_SEEK_10 %08lX", lba);
+        if(lba >= scsi->fn.num_blocks(scsi->fn.ctx)) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_LBA_OOB;
+            return false;
+        }
+        // Nothing physically moves; just validate the address and acknowledge.
+        return true;
+    }; break;
+    case SCSI_SEND_DIAGNOSTIC: {
+        if(len < 6 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        FURI_LOG_D(TAG, "SCSI_SEND_DIAGNOSTIC");
+        // Only the default self-test is supported, and it always passes. A non-zero parameter
+        // list length would mean a data-out page we do not implement, so reject that form.
+        uint16_t param_len = cmd[3] << 8 | cmd[4];
+        if(param_len) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+            return false;
+        }
+        return true;
     }; break;
     default: {
         FURI_LOG_W(TAG, "unexpected scsi cmd=%02X", cmd[0]);
