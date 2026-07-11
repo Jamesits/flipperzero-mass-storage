@@ -104,6 +104,12 @@ static bool file_sync(void* ctx) {
     return result;
 }
 
+static void file_wipe_progress(void* ctx, uint16_t progress, bool active) {
+    MassStorageApp* app = ctx;
+    app->wipe_progress = progress;
+    app->wipe_active = active;
+}
+
 static uint32_t file_num_blocks(void* ctx) {
     MassStorageApp* app = ctx;
     uint64_t size = 0;
@@ -152,6 +158,8 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
         }
     } else if(event.type == SceneManagerEventTypeTick) {
         mass_storage_set_stats(app->mass_storage_view, app->bytes_read, app->bytes_written);
+        mass_storage_set_wipe_progress(
+            app->mass_storage_view, app->wipe_progress, app->wipe_active);
         if(app->bytes_read != app->led_bytes_read ||
            app->bytes_written != app->led_bytes_written) {
             if(!app->led_blinking) {
@@ -185,7 +193,10 @@ void mass_storage_scene_work_on_enter(void* context) {
     }
     app->bytes_read = app->bytes_written = 0;
     app->led_bytes_read = app->led_bytes_written = 0;
+    app->wipe_progress = 0;
     app->led_blinking = false;
+    app->wipe_active = false;
+    mass_storage_set_wipe_progress(app->mass_storage_view, 0, false);
 
     if(!storage_file_exists(app->fs_api, furi_string_get_cstr(app->file_path))) {
         scene_manager_search_and_switch_to_previous_scene(
@@ -233,6 +244,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .num_blocks = file_num_blocks,
         .sync = file_sync,
         .eject = file_eject,
+        .wipe_progress = file_wipe_progress,
         .removed = file_removed,
         .suspended = file_suspended,
         .read_only = read_only,

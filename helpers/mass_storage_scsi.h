@@ -4,14 +4,20 @@
 
 #define SCSI_BLOCK_SIZE (0x200UL)
 
+#define SCSI_SK_NOT_READY       (2)
+#define SCSI_SK_MEDIUM_ERROR    (3)
 #define SCSI_SK_ILLEGAL_REQUEST (5)
 #define SCSI_SK_DATA_PROTECT    (7)
 
+#define SCSI_ASC_LOGICAL_UNIT_NOT_READY          (0x04)
+#define SCSI_ASC_WRITE_ERROR                     (0x0C)
 #define SCSI_ASC_INVALID_COMMAND_OPERATION_CODE  (0x20)
 #define SCSI_ASC_LBA_OOB                         (0x21)
 #define SCSI_ASC_INVALID_FIELD_IN_CDB            (0x24)
 #define SCSI_ASC_INVALID_FIELD_IN_PARAMETER_LIST (0x26)
 #define SCSI_ASC_WRITE_PROTECTED                 (0x27)
+
+#define SCSI_ASCQ_OPERATION_IN_PROGRESS (0x07)
 
 typedef enum {
     MassStorageDeviceTypeUsbSsd,
@@ -34,6 +40,9 @@ typedef struct {
     uint32_t (*num_blocks)(void* ctx);
     bool (*sync)(void* ctx);
     void (*eject)(void* ctx);
+    // Reports a full-medium optical wipe. Progress ranges from 0 to UINT16_MAX.
+    // active is false on completion, failure, or cancellation. May be NULL.
+    void (*wipe_progress)(void* ctx, uint16_t progress, bool active);
     // Called when the host tears down the USB device (SetConfiguration 0), as opposed
     // to ejecting just the media via eject(). May be NULL.
     void (*removed)(void* ctx);
@@ -59,6 +68,7 @@ typedef struct {
 
     uint8_t sk; // sense key
     uint8_t asc; // additional sense code
+    uint8_t ascq; // additional sense code qualifier
 
     // command-specific data
     // valid from cmd_start to cmd_end
@@ -95,6 +105,17 @@ typedef struct {
     bool optical_open;
     bool optical_finalized;
     bool optical_formatted;
+
+    struct {
+        uint32_t lba;
+        uint32_t total_blocks;
+        uint16_t progress;
+        bool active;
+        bool failed;
+        bool immediate;
+        bool operational_change_pending;
+        bool busy_change_pending;
+    } blank;
 } SCSISession;
 
 bool scsi_is_usb_disk(MassStorageDeviceType device_type);
@@ -108,3 +129,9 @@ bool scsi_cmd_start(
 bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len);
 bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t cap);
 bool scsi_cmd_end(SCSISession* scsi);
+
+bool scsi_blank_in_progress(const SCSISession* scsi);
+bool scsi_blank_defers_status(const SCSISession* scsi);
+bool scsi_blank_succeeded(const SCSISession* scsi);
+void scsi_blank_step(SCSISession* scsi, uint8_t* buffer, uint32_t buffer_size);
+void scsi_blank_cancel(SCSISession* scsi);

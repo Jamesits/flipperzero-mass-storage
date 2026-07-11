@@ -63,6 +63,22 @@ struct MassStorageUsb {
     bool configured;
 };
 
+static bool mass_storage_ensure_buffer(uint8_t** buffer, uint32_t* capacity) {
+    if(*buffer) return true;
+
+    for(*capacity = USB_MSC_BUF_SIZE_MAX; *capacity >= USB_MSC_BUF_SIZE_MIN; *capacity /= 2) {
+        *buffer = malloc(*capacity);
+        if(*buffer) {
+            FURI_LOG_D(TAG, "allocated %lu-byte transfer buffer", *capacity);
+            return true;
+        }
+    }
+
+    *capacity = 0;
+    FURI_LOG_E(TAG, "failed to allocate transfer buffer");
+    return false;
+}
+
 static int32_t mass_thread_worker(void* context) {
     MassStorageUsb* mass = context;
     usbd_device* dev = mass->dev;
@@ -81,20 +97,26 @@ static int32_t mass_thread_worker(void* context) {
         StateWriteData,
         StateWriteZlp,
         StateBuildCSW,
+        StateWaitBackground,
         StateWriteCSW,
     };
     enum MassStorageState state = StateReadCBW;
     enum MassStorageState state_after_zlp = StateBuildCSW;
     while(true) {
-        uint32_t flags = furi_thread_flags_wait(EventAll, FuriFlagWaitAny, FuriWaitForever);
+        bool background_pending = scsi_blank_in_progress(&scsi) || state == StateWaitBackground;
+        uint32_t flags = furi_thread_flags_wait(
+            EventAll, FuriFlagWaitAny, background_pending ? 0 : FuriWaitForever);
+        if(flags & FuriFlagError) flags = 0;
         if(flags & EventExit) {
             FURI_LOG_D(TAG, "exit");
+            scsi_blank_cancel(&scsi);
             break;
         }
         if(flags & EventReset) {
             FURI_LOG_D(TAG, "reset");
             scsi.sk = 0;
             scsi.asc = 0;
+            scsi.ascq = 0;
             memset(&cbw, 0, sizeof(cbw));
             memset(&csw, 0, sizeof(csw));
             if(buf) {
@@ -106,7 +128,7 @@ static int32_t mass_thread_worker(void* context) {
             data_sent = 0;
             state = StateReadCBW;
         }
-        if(flags & EventRxTx) do {
+        if((flags & EventRxTx) || state == StateWaitBackground) do {
                 switch(state) {
                 case StateReadCBW: {
                     FURI_LOG_T(TAG, "StateReadCBW");
@@ -142,21 +164,10 @@ static int32_t mass_thread_worker(void* context) {
                         continue;
                     }
                     data_sent = 0;
-                    if(cbw.len && !buf) {
-                        for(buf_cap = USB_MSC_BUF_SIZE_MAX;
-                            !buf && buf_cap >= USB_MSC_BUF_SIZE_MIN;
-                            buf_cap /= 2) {
-                            buf = malloc(buf_cap);
-                            if(buf) break;
-                        }
-                        if(!buf) {
-                            buf_cap = 0;
-                            FURI_LOG_E(TAG, "failed to allocate transfer buffer");
-                            usbd_ep_stall(dev, USB_MSC_TX_EP);
-                            usbd_ep_stall(dev, USB_MSC_RX_EP);
-                            continue;
-                        }
-                        FURI_LOG_D(TAG, "allocated %lu-byte transfer buffer", buf_cap);
+                    if(cbw.len && !mass_storage_ensure_buffer(&buf, &buf_cap)) {
+                        usbd_ep_stall(dev, USB_MSC_TX_EP);
+                        usbd_ep_stall(dev, USB_MSC_RX_EP);
+                        continue;
                     }
                     if(cbw.flags & CBW_FLAGS_DEVICE_TO_HOST) {
                         buf_len = 0;
@@ -247,12 +258,31 @@ static int32_t mass_thread_worker(void* context) {
                     FURI_LOG_T(TAG, "StateBuildCSW");
                     csw.sig = CSW_SIG;
                     csw.tag = cbw.tag;
-                    if(scsi_cmd_end(&scsi)) {
-                        csw.status = CSW_STATUS_OK;
-                    } else {
-                        csw.status = CSW_STATUS_NOK;
+                    bool command_ok = scsi_cmd_end(&scsi);
+                    if(command_ok && scsi_blank_in_progress(&scsi) &&
+                       !mass_storage_ensure_buffer(&buf, &buf_cap)) {
+                        scsi_blank_step(&scsi, NULL, 0);
+                        command_ok = false;
+                    }
+                    if(command_ok && scsi_blank_in_progress(&scsi) &&
+                       !scsi_blank_defers_status(&scsi)) {
+                        // Establish non-zero progress before an IMMED command is acknowledged,
+                        // so the host's first sense poll cannot mistake 0 for completion.
+                        scsi_blank_step(&scsi, buf, buf_cap);
+                        command_ok = scsi_blank_succeeded(&scsi);
                     }
                     csw.residue = cbw.len;
+                    if(command_ok && scsi_blank_defers_status(&scsi)) {
+                        state = StateWaitBackground;
+                        continue;
+                    }
+                    csw.status = command_ok ? CSW_STATUS_OK : CSW_STATUS_NOK;
+                    state = StateWriteCSW;
+                    continue;
+                }; break;
+                case StateWaitBackground: {
+                    if(scsi_blank_in_progress(&scsi)) break;
+                    csw.status = scsi_blank_succeeded(&scsi) ? CSW_STATUS_OK : CSW_STATUS_NOK;
                     state = StateWriteCSW;
                     continue;
                 }; break;
@@ -291,6 +321,14 @@ static int32_t mass_thread_worker(void* context) {
                 }
                 break;
             } while(true);
+
+        if(scsi_blank_in_progress(&scsi)) {
+            if(!mass_storage_ensure_buffer(&buf, &buf_cap)) {
+                scsi_blank_step(&scsi, NULL, 0);
+            } else {
+                scsi_blank_step(&scsi, buf, buf_cap);
+            }
+        }
     }
     if(buf) {
         free(buf);

@@ -136,6 +136,117 @@ static uint32_t scsi_optical_packet_size(SCSISession* scsi) {
     return scsi->optical_packet_size ? scsi->optical_packet_size : CD_RW_PACKET_SIZE;
 }
 
+static void scsi_set_sense(SCSISession* scsi, uint8_t sk, uint8_t asc, uint8_t ascq) {
+    scsi->sk = sk;
+    scsi->asc = asc;
+    scsi->ascq = ascq;
+}
+
+static void scsi_set_blank_progress(SCSISession* scsi, uint16_t progress, bool active) {
+    scsi->blank.progress = progress;
+    scsi->blank.active = active;
+    if(scsi->fn.wipe_progress) {
+        scsi->fn.wipe_progress(scsi->fn.ctx, progress, active);
+    }
+}
+
+static void scsi_finish_blank(SCSISession* scsi, bool success) {
+    scsi->blank.operational_change_pending = true;
+    scsi->blank.busy_change_pending = true;
+    if(success) {
+        scsi->next_writable_lba = 0;
+        scsi->reserved_blocks = 0;
+        scsi->formatted_blocks = 0;
+        scsi->optical_packet_size = 0;
+        scsi->optical_open = false;
+        scsi->optical_finalized = false;
+        scsi->optical_formatted = false;
+        scsi->blank.failed = false;
+        scsi_set_sense(scsi, 0, 0, 0);
+        scsi_set_blank_progress(scsi, UINT16_MAX, false);
+    } else {
+        scsi->blank.failed = true;
+        scsi_set_sense(scsi, SCSI_SK_MEDIUM_ERROR, SCSI_ASC_WRITE_ERROR, 0);
+        scsi_set_blank_progress(scsi, scsi->blank.progress, false);
+    }
+}
+
+static void scsi_start_blank(SCSISession* scsi, bool immediate) {
+    scsi->blank.lba = 0;
+    scsi->blank.total_blocks = scsi->fn.num_blocks(scsi->fn.ctx);
+    scsi->blank.failed = false;
+    scsi->blank.immediate = immediate;
+    scsi->blank.operational_change_pending = true;
+    scsi->blank.busy_change_pending = true;
+    scsi_set_sense(scsi, 0, 0, 0);
+    scsi_set_blank_progress(scsi, 0, true);
+}
+
+bool scsi_blank_in_progress(const SCSISession* scsi) {
+    return scsi->blank.active;
+}
+
+bool scsi_blank_defers_status(const SCSISession* scsi) {
+    return scsi->blank.active && !scsi->blank.immediate;
+}
+
+bool scsi_blank_succeeded(const SCSISession* scsi) {
+    return !scsi->blank.failed;
+}
+
+void scsi_blank_step(SCSISession* scsi, uint8_t* buffer, uint32_t buffer_size) {
+    if(!scsi->blank.active) return;
+
+    uint32_t block_size = scsi->fn.block_size;
+    uint32_t buffer_blocks = block_size ? buffer_size / block_size : 0;
+    uint32_t remaining = scsi->blank.total_blocks - scsi->blank.lba;
+    if(remaining) {
+        if(!buffer || !buffer_blocks) {
+            scsi_finish_blank(scsi, false);
+            return;
+        }
+
+        uint16_t blocks = MIN(remaining, MIN(buffer_blocks, (uint32_t)UINT16_MAX));
+        uint32_t write_size = blocks * block_size;
+        memset(buffer, 0, write_size);
+        if(!scsi->fn.write(scsi->fn.ctx, scsi->blank.lba, blocks, buffer, write_size)) {
+            scsi_finish_blank(scsi, false);
+            return;
+        }
+
+        scsi->blank.lba += blocks;
+        uint16_t progress = scsi->blank.total_blocks ?
+                                (uint64_t)scsi->blank.lba * UINT16_MAX / scsi->blank.total_blocks :
+                                UINT16_MAX;
+        if(!progress) progress = 1;
+        if(progress != scsi->blank.progress) {
+            scsi_set_blank_progress(scsi, progress, true);
+        }
+    }
+
+    if(scsi->blank.lba == scsi->blank.total_blocks) {
+        scsi_finish_blank(scsi, scsi->fn.sync(scsi->fn.ctx));
+    }
+}
+
+void scsi_blank_cancel(SCSISession* scsi) {
+    if(!scsi->blank.active) return;
+    scsi->blank.failed = false;
+    scsi_set_blank_progress(scsi, scsi->blank.progress, false);
+}
+
+static uint16_t scsi_blank_estimated_100ms(const SCSISession* scsi) {
+    if(!scsi->blank.active) return 0;
+
+    uint64_t remaining_bytes =
+        (uint64_t)(scsi->blank.total_blocks - scsi->blank.lba) * scsi->fn.block_size;
+    uint64_t units =
+        (remaining_bytes * 10 + PERFORMANCE_END * 1000 - 1) / (PERFORMANCE_END * 1000);
+    if(units < 2) return 2;
+    if(units > UINT16_MAX) return UINT16_MAX;
+    return units;
+}
+
 static uint8_t
     scsi_mode_page(SCSISession* scsi, uint8_t* page, uint8_t page_code, uint8_t page_control) {
     bool read_only = scsi->fn.read_only;
@@ -306,6 +417,18 @@ bool scsi_cmd_start(
     scsi->cmd_len = len;
     scsi->rx_done = false;
     scsi->tx_done = false;
+
+    if(scsi->blank.active && cmd[0] != SCSI_TEST_UNIT_READY && cmd[0] != SCSI_REQUEST_SENSE &&
+       cmd[0] != SCSI_INQUIRY && cmd[0] != SCSI_GET_CONFIGURATION &&
+       cmd[0] != SCSI_GET_EVENT_STATUS && cmd[0] != SCSI_READ_DISC_INFORMATION) {
+        scsi_set_sense(
+            scsi,
+            SCSI_SK_NOT_READY,
+            SCSI_ASC_LOGICAL_UNIT_NOT_READY,
+            SCSI_ASCQ_OPERATION_IN_PROGRESS);
+        return false;
+    }
+
     switch(cmd[0]) {
     case SCSI_WRITE_10: {
         if(len < 10) return false;
@@ -356,6 +479,28 @@ bool scsi_cmd_start(
         }
         scsi->rx_done = false;
         FURI_LOG_D(TAG, "SCSI_FORMAT_UNIT %08lX", scsi->format.remaining);
+        return true;
+    }; break;
+    case SCSI_BLANK: {
+        if(len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        if(scsi->fn.read_only) {
+            scsi->sk = SCSI_SK_DATA_PROTECT;
+            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+            return false;
+        }
+        // Full and minimal blank both wipe the complete file-backed medium. Partial blanking
+        // cannot be represented faithfully by the single-track emulation.
+        uint8_t blank_type = cmd[1] & 0x07;
+        if(blank_type > 1) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+            return false;
+        }
+        if(transfer_len) {
+            scsi->phase_error = true;
+            return false;
+        }
+        FURI_LOG_D(TAG, "SCSI_BLANK type=%u immediate=%u", blank_type, !!(cmd[1] & 0x10));
         return true;
     }; break;
     case SCSI_SEND_CUE_SHEET: {
@@ -521,10 +666,11 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
     case SCSI_REQUEST_SENSE: {
         FURI_LOG_D(TAG, "SCSI_REQUEST_SENSE");
         if(cap < 18) return false;
+        bool blank_active = scsi->blank.active;
         memset(data, 0, cap);
         data[0] = 0x70; // fixed format sense data
         data[1] = 0; // obsolete
-        data[2] = scsi->sk; // sense key
+        data[2] = blank_active ? SCSI_SK_NOT_READY : scsi->sk; // sense key
         data[3] = 0; // information
         data[4] = 0; // information
         data[5] = 0; // information
@@ -534,15 +680,19 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         data[9] = 0; // command specific information
         data[10] = 0; // command specific information
         data[11] = 0; // command specific information
-        data[12] = scsi->asc; // additional sense code
-        data[13] = 0; // additional sense code qualifier
+        data[12] = blank_active ? SCSI_ASC_LOGICAL_UNIT_NOT_READY : scsi->asc;
+        data[13] = blank_active ? SCSI_ASCQ_OPERATION_IN_PROGRESS : scsi->ascq;
         data[14] = 0; // field replaceable unit code
-        data[15] = 0; // sense key specific information
-        data[16] = 0; // sense key specific information
-        data[17] = 0; // sense key specific information
+        if(blank_active) {
+            data[15] = 0x80; // SKSV: bytes 16..17 contain progress indication
+            data[16] = scsi->blank.progress >> 8;
+            data[17] = scsi->blank.progress;
+        }
         *len = 18;
+        if(!blank_active) scsi->blank.failed = false;
         scsi->sk = 0;
         scsi->asc = 0;
+        scsi->ascq = 0;
         scsi->tx_done = true;
         return true;
     }; break;
@@ -837,9 +987,33 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         if(scsi->cmd_len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
             return false;
         }
-        uint8_t response[8] = {0, 6, 4, 0x10, 0, 2, 0, 0};
+        uint8_t requested_classes = scsi->cmd[4];
+        uint8_t response[8] = {0, 6, 4, 0x52, 0, 2, 0, 0};
         uint8_t response_len = sizeof(response);
-        if(!(scsi->cmd[4] & 0x10)) {
+        if(scsi->blank.operational_change_pending && (requested_classes & 0x02)) {
+            response[2] = 1; // Operational Change event class
+            response[4] = 2; // Drive operational state changed
+            memset(response + 5, 0, 3);
+            scsi->blank.operational_change_pending = false;
+        } else if(
+            (requested_classes & 0x40) &&
+            (scsi->blank.busy_change_pending || scsi->blank.active)) {
+            uint16_t ready_time = scsi_blank_estimated_100ms(scsi);
+            response[2] = 6; // Device Busy event class
+            response[4] = scsi->blank.busy_change_pending ? 1 : 0;
+            response[5] = scsi->blank.active ? 1 : 0;
+            response[6] = ready_time >> 8;
+            response[7] = ready_time;
+            scsi->blank.busy_change_pending = false;
+        } else if(requested_classes & 0x02) {
+            response[2] = 1; // Operational Change event class, no change
+            memset(response + 4, 0, 4);
+        } else if(requested_classes & 0x10) {
+            // Media event class: no change, media present.
+        } else if(requested_classes & 0x40) {
+            response[2] = 6; // Device Busy event class, no change and not busy
+            memset(response + 4, 0, 4);
+        } else {
             // No requested event class is available. NEA is set and no descriptor follows.
             response[1] = 2;
             response[2] = 0x80;
@@ -852,6 +1026,15 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         if(scsi->cmd_len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) {
             return false;
         }
+        if(scsi->blank.active) {
+            scsi_set_sense(
+                scsi,
+                SCSI_SK_NOT_READY,
+                SCSI_ASC_LOGICAL_UNIT_NOT_READY,
+                SCSI_ASCQ_OPERATION_IN_PROGRESS);
+            return false;
+        }
+        if(scsi->blank.failed) return false;
         uint8_t data_type = scsi->cmd[1] & 0x07;
         if(data_type == 1) {
             uint8_t response[12] = {0};
@@ -1163,6 +1346,15 @@ bool scsi_cmd_end(SCSISession* scsi) {
 
     case SCSI_TEST_UNIT_READY: {
         FURI_LOG_D(TAG, "SCSI_TEST_UNIT_READY");
+        if(scsi->blank.active) {
+            scsi_set_sense(
+                scsi,
+                SCSI_SK_NOT_READY,
+                SCSI_ASC_LOGICAL_UNIT_NOT_READY,
+                SCSI_ASCQ_OPERATION_IN_PROGRESS);
+            return false;
+        }
+        if(scsi->blank.failed) return false;
         return true;
     }; break;
     case SCSI_REZERO_UNIT: {
@@ -1223,22 +1415,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         return true;
     }; break;
     case SCSI_BLANK: {
-        if(len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
-        if(scsi->fn.read_only) {
-            scsi->sk = SCSI_SK_DATA_PROTECT;
-            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
-            return false;
-        }
-        FURI_LOG_D(TAG, "SCSI_BLANK");
-        // Fast blank: reset the recording state so the medium reads back as an empty,
-        // writable disc. Existing backing-file contents are overwritten as data is rewritten.
-        scsi->next_writable_lba = 0;
-        scsi->reserved_blocks = 0;
-        scsi->formatted_blocks = 0;
-        scsi->optical_packet_size = 0;
-        scsi->optical_open = false;
-        scsi->optical_finalized = false;
-        scsi->optical_formatted = false;
+        scsi_start_blank(scsi, cmd[1] & 0x10);
         return true;
     }; break;
     case SCSI_FORMAT_UNIT: {

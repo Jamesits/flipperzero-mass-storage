@@ -11,6 +11,8 @@ typedef struct {
     uint32_t read_speed, write_speed;
     uint32_t bytes_read, bytes_written;
     uint32_t update_time;
+    uint16_t wipe_progress;
+    bool wipe_active;
 } MassStorageModel;
 
 static void append_suffixed_byte_count(FuriString* string, uint32_t count) {
@@ -56,6 +58,18 @@ static void mass_storage_draw_callback(Canvas* canvas, void* _model) {
         furi_string_cat_str(model->status_string, "ps");
     }
     canvas_draw_str(canvas, 12, 44, furi_string_get_cstr(model->status_string));
+
+    if(model->wipe_active) {
+        uint32_t percent = ((uint32_t)model->wipe_progress * 100 + UINT16_MAX / 2) / UINT16_MAX;
+        furi_string_printf(model->status_string, "Wiping %lu%%", percent);
+        elements_progress_bar_with_text(
+            canvas,
+            12,
+            51,
+            104,
+            (float)model->wipe_progress / UINT16_MAX,
+            furi_string_get_cstr(model->status_string));
+    }
 }
 
 MassStorage* mass_storage_alloc() {
@@ -117,6 +131,17 @@ void mass_storage_set_stats(MassStorage* mass_storage, uint32_t read, uint32_t w
             model->bytes_read = read;
             model->bytes_written = written;
             model->update_time = now;
+        },
+        true);
+}
+
+void mass_storage_set_wipe_progress(MassStorage* mass_storage, uint16_t progress, bool active) {
+    with_view_model(
+        mass_storage->view,
+        MassStorageModel * model,
+        {
+            model->wipe_progress = progress;
+            model->wipe_active = active;
         },
         true);
 }
