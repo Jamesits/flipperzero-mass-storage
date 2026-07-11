@@ -637,7 +637,8 @@ static void audio_cd_handle_control(AudioCd* cd, const AudioCdEvent* event) {
         audio_cd_stop_output(cd);
         cd->scan_active = false;
         audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
-        audio_cd_set_status(cd, SCSIAudioStatusStopped, current.lba, current.end_lba);
+        audio_cd_set_status(
+            cd, SCSIAudioStatusStopped, cd->tracks[current.track - 1].disc_index1, current.end_lba);
         break;
     case SCSIAudioControlScanForward:
     case SCSIAudioControlScanBackward:
