@@ -73,6 +73,15 @@ typedef struct {
 } SCSIAudioStatus;
 
 typedef struct {
+    uint32_t next_writable_lba;
+    uint32_t formatted_blocks;
+    uint32_t packet_size;
+    bool open;
+    bool finalized;
+    bool formatted;
+} SCSIOpticalState;
+
+typedef struct {
     void* ctx;
     bool (*read)(
         void* ctx,
@@ -84,6 +93,8 @@ typedef struct {
     bool (*write)(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, uint32_t len);
     uint32_t (*num_blocks)(void* ctx);
     bool (*sync)(void* ctx);
+    // Persists recording state outside the raw image. May be NULL.
+    bool (*save_optical_state)(void* ctx, const SCSIOpticalState* state);
     void (*eject)(void* ctx);
     // Reports a full-medium optical wipe. Progress ranges from 0 to UINT16_MAX.
     // active is false on completion, failure, or cancellation. May be NULL.
@@ -110,6 +121,8 @@ typedef struct {
     bool audio_cd;
     // The backing image already contains a formatted rewritable optical filesystem.
     bool optical_formatted;
+    bool optical_state_valid;
+    SCSIOpticalState optical_state;
 } SCSIDeviceFunc;
 
 typedef struct {
@@ -141,7 +154,9 @@ typedef struct {
         } write;
 
         struct {
+            uint16_t total;
             uint16_t remaining;
+            uint8_t parameters[12];
         } mode_select;
 
         struct {
@@ -162,6 +177,7 @@ typedef struct {
     bool optical_open;
     bool optical_finalized;
     bool optical_formatted;
+    bool optical_multi_session;
 
     struct {
         uint32_t lba;
@@ -177,6 +193,7 @@ typedef struct {
 
 bool scsi_is_usb_disk(MassStorageDeviceType device_type);
 void scsi_session_init(SCSISession* scsi, SCSIDeviceFunc fn);
+bool scsi_session_sync(SCSISession* scsi);
 
 bool scsi_cmd_start(
     SCSISession* scsi,

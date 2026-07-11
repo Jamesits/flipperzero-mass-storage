@@ -4,6 +4,7 @@
 #include "scenes/mass_storage_scene.h"
 #include "helpers/mass_storage_usb.h"
 #include "helpers/audio_cd.h"
+#include "helpers/mass_storage_metadata.h"
 
 #include <furi_hal.h>
 #include <gui/gui.h>
@@ -65,6 +66,7 @@ struct MassStorageApp {
     MassStorageExitOnEject exit_on_eject;
     MassStorageDeviceType device_type;
     AudioCdOutput audio_output;
+    MassStorageMetadata metadata;
 
     uint32_t bytes_read, bytes_written;
     uint32_t led_bytes_read, led_bytes_written;

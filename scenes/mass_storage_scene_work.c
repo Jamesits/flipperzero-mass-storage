@@ -5,7 +5,12 @@
 
 #define TAG "MassStorageSceneWork"
 
-#define AUDIO_CD_PREVIOUS_WINDOW_MS (1500UL)
+#define AUDIO_CD_PREVIOUS_WINDOW_MS   (1500UL)
+#define IMAGE_FINGERPRINT_SAMPLE_SIZE (256UL)
+#define IMAGE_FINGERPRINT_BUFFER_SIZE (64UL)
+
+#define FNV1A_64_OFFSET_BASIS (14695981039346656037ULL)
+#define FNV1A_64_PRIME        (1099511628211ULL)
 
 static uint32_t mass_storage_block_size(MassStorageApp* app) {
     return app->device_type == MassStorageDeviceTypeOptical ? 2048 : SCSI_BLOCK_SIZE;
@@ -36,6 +41,79 @@ static bool file_prepare_part(
     if(app->file_offsets[*part] != *part_offset) {
         if(!mass_storage_file_seek(*file, *part_offset)) return false;
         app->file_offsets[*part] = *part_offset;
+    }
+    return true;
+}
+
+static uint64_t file_total_size(const MassStorageApp* app) {
+    uint64_t size = 0;
+    for(uint8_t part = 0; part < app->file_count; part++) {
+        size += app->file_sizes[part];
+    }
+    return size;
+}
+
+static void file_fingerprint_update(uint64_t* fingerprint, const void* data, size_t size) {
+    const uint8_t* bytes = data;
+    for(size_t i = 0; i < size; i++) {
+        *fingerprint ^= bytes[i];
+        *fingerprint *= FNV1A_64_PRIME;
+    }
+}
+
+static void file_fingerprint_update_u64(uint64_t* fingerprint, uint64_t value) {
+    for(uint8_t i = 0; i < sizeof(value); i++) {
+        uint8_t byte = value >> (i * 8);
+        file_fingerprint_update(fingerprint, &byte, sizeof(byte));
+    }
+}
+
+static bool file_fingerprint_range(
+    MassStorageApp* app,
+    uint64_t offset,
+    uint32_t length,
+    uint64_t* fingerprint) {
+    uint8_t buffer[IMAGE_FINGERPRINT_BUFFER_SIZE];
+    file_fingerprint_update_u64(fingerprint, offset);
+    file_fingerprint_update_u64(fingerprint, length);
+
+    uint32_t remaining = length;
+    while(remaining) {
+        File* file;
+        uint8_t part;
+        uint64_t part_offset;
+        if(!file_prepare_part(app, offset, &file, &part, &part_offset)) return false;
+
+        uint32_t chunk = MIN(remaining, sizeof(buffer));
+        chunk = MIN(chunk, app->file_sizes[part] - part_offset);
+        uint32_t bytes_read = storage_file_read(file, buffer, chunk);
+        app->file_offsets[part] += bytes_read;
+        if(bytes_read != chunk || !chunk) return false;
+        file_fingerprint_update(fingerprint, buffer, bytes_read);
+        offset += bytes_read;
+        remaining -= bytes_read;
+    }
+    return true;
+}
+
+static bool
+    file_fingerprint(MassStorageApp* app, const SCSIOpticalState* state, uint64_t* fingerprint) {
+    uint64_t image_size = file_total_size(app);
+    uint64_t recorded_size = (uint64_t)state->next_writable_lba * 2048;
+    uint64_t span = recorded_size && recorded_size <= image_size ? recorded_size : image_size;
+    const uint64_t offsets[] = {
+        0,
+        16 * 2048,
+        span / 2,
+        span > IMAGE_FINGERPRINT_SAMPLE_SIZE ? span - IMAGE_FINGERPRINT_SAMPLE_SIZE : 0,
+    };
+
+    *fingerprint = FNV1A_64_OFFSET_BASIS;
+    file_fingerprint_update_u64(fingerprint, image_size);
+    for(uint8_t i = 0; i < COUNT_OF(offsets); i++) {
+        if(offsets[i] >= image_size) continue;
+        uint32_t length = MIN(IMAGE_FINGERPRINT_SAMPLE_SIZE, image_size - offsets[i]);
+        if(!file_fingerprint_range(app, offsets[i], length, fingerprint)) return false;
     }
     return true;
 }
@@ -155,6 +233,42 @@ static bool file_sync(void* ctx) {
     return result;
 }
 
+static bool file_save_optical_state(void* ctx, const SCSIOpticalState* state) {
+    MassStorageApp* app = ctx;
+    uint64_t fingerprint;
+    if(app->read_only || !file_fingerprint(app, state, &fingerprint)) return false;
+
+    app->metadata.optical_state_valid = true;
+    app->metadata.image_size = file_total_size(app);
+    app->metadata.image_fingerprint = fingerprint;
+    app->metadata.optical_state = *state;
+    return mass_storage_metadata_save(
+        app->fs_api, furi_string_get_cstr(app->file_path), &app->metadata);
+}
+
+static bool file_load_optical_state(MassStorageApp* app, SCSIOpticalState* state) {
+    if(!app->metadata.optical_state_valid) return false;
+
+    uint64_t image_size = file_total_size(app);
+    uint64_t block_count = image_size / 2048;
+    const SCSIOpticalState* saved = &app->metadata.optical_state;
+    if(image_size % 2048 || block_count > UINT32_MAX || app->metadata.image_size != image_size ||
+       saved->next_writable_lba > block_count || saved->formatted_blocks > block_count ||
+       (saved->open && saved->finalized) ||
+       (saved->formatted && (!saved->formatted_blocks || !saved->packet_size))) {
+        return false;
+    }
+
+    uint64_t fingerprint;
+    if(!file_fingerprint(app, saved, &fingerprint) ||
+       fingerprint != app->metadata.image_fingerprint) {
+        return false;
+    }
+
+    *state = *saved;
+    return true;
+}
+
 static void file_wipe_progress(void* ctx, uint16_t progress, bool active) {
     MassStorageApp* app = ctx;
     app->wipe_progress = progress;
@@ -164,11 +278,7 @@ static void file_wipe_progress(void* ctx, uint16_t progress, bool active) {
 static uint32_t file_num_blocks(void* ctx) {
     MassStorageApp* app = ctx;
     if(app->audio_cd) return audio_cd_num_sectors(app->audio_cd);
-    uint64_t size = 0;
-    for(uint8_t part = 0; part < app->file_count; part++) {
-        size += app->file_sizes[part];
-    }
-    return size / mass_storage_file_block_size(app);
+    return file_total_size(app) / mass_storage_file_block_size(app);
 }
 
 static uint8_t file_audio_track_count(void* ctx) {
@@ -453,8 +563,18 @@ void mass_storage_scene_work_on_enter(void* context) {
         furi_string_free(part_path);
     }
 
-    bool optical_formatted = !app->audio_cd && app->device_type == MassStorageDeviceTypeOptical &&
-                             !read_only && file_has_udf_volume_recognition_sequence(app);
+    bool optical_image = !app->audio_cd && app->device_type == MassStorageDeviceTypeOptical;
+    SCSIOpticalState optical_state = {0};
+    bool optical_state_valid = optical_image && file_load_optical_state(app, &optical_state);
+    if(optical_state_valid) {
+        FURI_LOG_I(TAG, "restored optical recording state from companion file");
+    } else if(optical_image && app->metadata.optical_state_valid) {
+        FURI_LOG_W(TAG, "ignored stale optical recording state");
+        app->metadata.optical_state_valid = false;
+    }
+
+    bool optical_formatted = !optical_state_valid && optical_image && !read_only &&
+                             file_has_udf_volume_recognition_sequence(app);
     if(optical_formatted) {
         FURI_LOG_I(TAG, "restored formatted optical state from UDF image");
     }
@@ -465,6 +585,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .write = file_write,
         .num_blocks = file_num_blocks,
         .sync = file_sync,
+        .save_optical_state = optical_image && !read_only ? file_save_optical_state : NULL,
         .eject = file_eject,
         .wipe_progress = file_wipe_progress,
         .removed = file_removed,
@@ -481,6 +602,8 @@ void mass_storage_scene_work_on_enter(void* context) {
         .block_size = mass_storage_block_size(app),
         .audio_cd = app->audio_cd != NULL,
         .optical_formatted = optical_formatted,
+        .optical_state_valid = optical_state_valid,
+        .optical_state = optical_state,
     };
 
     FURI_LOG_I(TAG, "Starting USB storage");

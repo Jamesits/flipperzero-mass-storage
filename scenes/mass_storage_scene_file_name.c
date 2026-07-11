@@ -34,6 +34,7 @@ static bool
 
 static bool mass_storage_create_image(Storage* storage, const char* file_path, uint64_t size) {
     FURI_LOG_I("TAG", "Creating image %s, len:%llu", file_path, size);
+    mass_storage_metadata_remove(storage, file_path);
     FuriString* part_path = furi_string_alloc();
     uint8_t part_count = (size + MASS_STORAGE_FILE_PART_SIZE - 1) / MASS_STORAGE_FILE_PART_SIZE;
     bool success = true;

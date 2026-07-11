@@ -3,7 +3,7 @@
 static const char* device_type_names[MassStorageDeviceTypeCount] = {
     [MassStorageDeviceTypeUsbSsd] = "USB-SSD",
     [MassStorageDeviceTypeUsbHdd] = "USB-HDD",
-    [MassStorageDeviceTypeFdd] = "FDD",
+    [MassStorageDeviceTypeFdd] = "Floppy",
     [MassStorageDeviceTypeOptical] = "Optical",
 };
 
@@ -19,6 +19,52 @@ static const char* audio_output_names[AudioCdOutputCount] = {
     [AudioCdOutputExternal] = "External",
     [AudioCdOutputBoth] = "Both",
 };
+
+static bool mass_storage_is_fixed_optical(const MassStorageApp* app) {
+    return furi_string_end_withi(app->file_path, MASS_STORAGE_ISO_EXTENSION) ||
+           furi_string_end_withi(app->file_path, MASS_STORAGE_CUE_EXTENSION);
+}
+
+static bool mass_storage_mount_options_valid(
+    const MassStorageApp* app,
+    const MassStorageMountOptions* options) {
+    if(!options->valid || options->exit_on_eject >= MassStorageExitOnEjectCount ||
+       options->device_type >= MassStorageDeviceTypeCount ||
+       options->audio_output >= AudioCdOutputCount) {
+        return false;
+    }
+
+    return !mass_storage_is_fixed_optical(app) ||
+           (options->read_only && options->device_type == MassStorageDeviceTypeOptical);
+}
+
+static void mass_storage_load_mount_options(MassStorageApp* app) {
+    if(!mass_storage_metadata_load(
+           app->fs_api, furi_string_get_cstr(app->file_path), &app->metadata)) {
+        memset(&app->metadata, 0, sizeof(app->metadata));
+        return;
+    }
+
+    const MassStorageMountOptions* options = &app->metadata.mount;
+    if(mass_storage_mount_options_valid(app, options)) {
+        app->read_only = options->read_only;
+        app->exit_on_eject = options->exit_on_eject;
+        app->device_type = options->device_type;
+        app->audio_output = options->audio_output;
+    }
+}
+
+static void mass_storage_save_mount_options(MassStorageApp* app) {
+    app->metadata.mount.valid = true;
+    app->metadata.mount.read_only = app->read_only;
+    app->metadata.mount.exit_on_eject = app->exit_on_eject;
+    app->metadata.mount.device_type = app->device_type;
+    app->metadata.mount.audio_output = app->audio_output;
+    if(!mass_storage_metadata_save(
+           app->fs_api, furi_string_get_cstr(app->file_path), &app->metadata)) {
+        FURI_LOG_W("MassStorageSettings", "failed to save image mount options");
+    }
+}
 
 static void mass_storage_settings_select(void* context, uint32_t index) {
     MassStorageApp* app = context;
@@ -53,9 +99,9 @@ static void mass_storage_audio_output(VariableItem* item) {
 
 void mass_storage_scene_settings_on_enter(void* context) {
     MassStorageApp* app = context;
-    bool is_iso = furi_string_end_withi(app->file_path, MASS_STORAGE_ISO_EXTENSION);
+    mass_storage_load_mount_options(app);
     bool is_cue = furi_string_end_withi(app->file_path, MASS_STORAGE_CUE_EXTENSION);
-    bool fixed_optical = is_iso || is_cue;
+    bool fixed_optical = mass_storage_is_fixed_optical(app);
     if(fixed_optical) {
         app->read_only = true;
         app->device_type = MassStorageDeviceTypeOptical;
@@ -118,6 +164,7 @@ bool mass_storage_scene_settings_on_event(void* context, SceneManagerEvent event
 
     if(event.type == SceneManagerEventTypeCustom && event.event == MassStorageCustomEventStart) {
         if(!furi_hal_usb_is_locked()) {
+            mass_storage_save_mount_options(app);
             scene_manager_next_scene(app->scene_manager, MassStorageSceneWork);
         } else {
             scene_manager_next_scene(app->scene_manager, MassStorageSceneUsbLocked);

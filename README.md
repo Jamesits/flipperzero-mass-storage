@@ -24,10 +24,23 @@ Features:
 
 ## Usage
 
+### Common Options
+
+- Read only: Off / On
+- Exit on eject: Off (keep the disk mounted no matter what) / Disk (exits when the host ejects the disk / tray) / USB (exists when the host ejects or USB disconnects)
+
 ### Raw Disk Images
 
-`.img` and `.raw` files are emulated as block devices, read-write and read-only configurable. In CD-RW emulation mode,
-files without a valid UDF will be reported as empty / not formatted.
+`.img` and `.raw` files are emulated as block devices, read-write and read-only configurable.
+
+This type of image can be emulated as:
+
+- USB-SSD (UMS, rotation rate = 1)
+- USB-HDD (UMS, rotation rate = 7200)
+- Floppy (Windows shows large floppy disks as USB removable disks; to be identified as a floppy disk, use a small image)
+- CD-RW
+
+In CD-RW emulation mode, files without a valid UDF will be reported as empty / not formatted.
 
 ### ISO Images
 
@@ -55,6 +68,10 @@ Flipper speaker / PA6 output controls:
 - Hold Left/Right: scan backward/forward
 
 Hosts can also control playback with the MMC play, pause/resume, stop, seek, and scan commands.
+
+## Notes
+
+- A `.msmeta` file is used to remember mount options and CD-RW metadata. It does not contain actual image data.
 
 ## Development
 

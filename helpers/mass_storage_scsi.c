@@ -80,7 +80,14 @@ void scsi_session_init(SCSISession* scsi, SCSIDeviceFunc fn) {
     memset(scsi, 0, sizeof(SCSISession));
     scsi->fn = fn;
 
-    if(fn.device_type == MassStorageDeviceTypeOptical && fn.optical_formatted) {
+    if(fn.device_type == MassStorageDeviceTypeOptical && fn.optical_state_valid) {
+        scsi->next_writable_lba = fn.optical_state.next_writable_lba;
+        scsi->formatted_blocks = fn.optical_state.formatted_blocks;
+        scsi->optical_packet_size = fn.optical_state.packet_size;
+        scsi->optical_open = fn.optical_state.open;
+        scsi->optical_finalized = fn.optical_state.finalized;
+        scsi->optical_formatted = fn.optical_state.formatted;
+    } else if(fn.device_type == MassStorageDeviceTypeOptical && fn.optical_formatted) {
         uint32_t blocks = fn.num_blocks(fn.ctx);
         scsi->formatted_blocks = blocks - blocks % CD_RW_PACKET_SIZE;
         scsi->optical_packet_size = CD_RW_PACKET_SIZE;
@@ -162,6 +169,26 @@ static uint32_t scsi_medium_blocks(SCSISession* scsi) {
         return scsi->formatted_blocks;
     }
     return scsi->fn.num_blocks(scsi->fn.ctx);
+}
+
+static bool scsi_save_optical_state(SCSISession* scsi) {
+    if(scsi->fn.device_type != MassStorageDeviceTypeOptical || !scsi->fn.save_optical_state) {
+        return true;
+    }
+
+    SCSIOpticalState state = {
+        .next_writable_lba = scsi->next_writable_lba,
+        .formatted_blocks = scsi->formatted_blocks,
+        .packet_size = scsi->optical_packet_size,
+        .open = scsi->optical_open,
+        .finalized = scsi->optical_finalized,
+        .formatted = scsi->optical_formatted,
+    };
+    return scsi->fn.save_optical_state(scsi->fn.ctx, &state);
+}
+
+bool scsi_session_sync(SCSISession* scsi) {
+    return scsi->fn.sync(scsi->fn.ctx) && scsi_save_optical_state(scsi);
 }
 
 static void scsi_set_sense(SCSISession* scsi, uint8_t sk, uint8_t asc, uint8_t ascq);
@@ -263,14 +290,19 @@ static void scsi_finish_blank(SCSISession* scsi, bool success) {
         scsi->optical_open = false;
         scsi->optical_finalized = false;
         scsi->optical_formatted = false;
+        scsi->optical_multi_session = false;
+        success = scsi_save_optical_state(scsi);
+    }
+    if(success) {
         scsi->blank.failed = false;
         scsi_set_sense(scsi, 0, 0, 0);
         scsi_set_blank_progress(scsi, UINT16_MAX, false);
-    } else {
-        scsi->blank.failed = true;
-        scsi_set_sense(scsi, SCSI_SK_MEDIUM_ERROR, SCSI_ASC_WRITE_ERROR, 0);
-        scsi_set_blank_progress(scsi, scsi->blank.progress, false);
+        return;
     }
+
+    scsi->blank.failed = true;
+    scsi_set_sense(scsi, SCSI_SK_MEDIUM_ERROR, SCSI_ASC_WRITE_ERROR, 0);
+    scsi_set_blank_progress(scsi, scsi->blank.progress, false);
 }
 
 static void scsi_start_blank(SCSISession* scsi, bool immediate) {
@@ -375,7 +407,7 @@ static uint8_t
                           0x20 : // valid link size, packet/restricted overwrite
                           0x21; // valid link size, track-at-once
             page[3] = scsi->optical_formatted ? 0x24 : // fixed packet, Mode 1 data track
-                                                0x04; // Mode 1 data track
+                          (scsi->optical_multi_session ? 0xC4 : 0x04); // Mode 1 data track
             page[4] = 0x08; // 2048-byte Mode 1 user data
             page[5] = 0x07;
             scsi_store_be32(page + 10, scsi_optical_packet_size(scsi));
@@ -589,7 +621,9 @@ bool scsi_cmd_start(
         // We expect page-format parameters (PF) and simply ignore the SP (save pages) bit:
         // we don't persist mode pages, but rejecting SP outright (with no sense data) made
         // real burners fail "set write parameters" with "no additional sense information".
-        scsi->mode_select.remaining = cmd[7] << 8 | cmd[8];
+        scsi->mode_select.total = cmd[7] << 8 | cmd[8];
+        scsi->mode_select.remaining = scsi->mode_select.total;
+        memset(scsi->mode_select.parameters, 0, sizeof(scsi->mode_select.parameters));
         if(device_to_host || transfer_len != scsi->mode_select.remaining) {
             scsi->phase_error = true;
             return false;
@@ -797,18 +831,10 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
     }; break;
     case SCSI_MODE_SELECT_10: {
         if(len > scsi->mode_select.remaining) return false;
-        // Host sends an 8-byte parameter header followed by the Write Parameters page (05h).
-        // We don't act on the parameters (data is written straight to the backing file), so
-        // accept whatever write type / data block type a burner selects (TAO, SAO/DAO,
-        // packet); only sanity-check that this really is the write parameters page.
-        if(scsi->mode_select.remaining == (uint16_t)(scsi->cmd[7] << 8 | scsi->cmd[8])) {
-            uint8_t page = len >= 9 ? data[8] & 0x3F : 0;
-            if(len >= 9 && page != 0x05 &&
-               (page != 0x0E || !scsi_audio_playback_supported(scsi))) {
-                scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
-                scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
-                return false;
-            }
+        uint16_t offset = scsi->mode_select.total - scsi->mode_select.remaining;
+        if(offset < sizeof(scsi->mode_select.parameters)) {
+            uint16_t copy_len = MIN(len, (uint32_t)sizeof(scsi->mode_select.parameters) - offset);
+            memcpy(scsi->mode_select.parameters + offset, data, copy_len);
         }
         scsi->mode_select.remaining -= len;
         scsi->rx_done = scsi->mode_select.remaining == 0;
@@ -1380,10 +1406,11 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
 
         uint8_t response[34] = {0};
         response[1] = 0x20;
-        // A formatted CD-RW is appendable (in use), an open track is appendable too, and a
-        // blank medium is empty. Read-only or finalized media reports complete.
+        // A formatted CD-RW or open track has an incomplete last session. A session closed
+        // with the Multi-Session field set is complete but leaves the disc appendable.
         response[2] = scsi->fn.read_only || scsi->optical_finalized ? 0x0E :
                       scsi->optical_open || scsi->optical_formatted ? 0x05 :
+                      scsi->next_writable_lba                       ? 0x0D :
                                                                       0x00;
         // Erasable bit: rewritable CD-RW media can be blanked and rewritten.
         if(!scsi->fn.read_only) response[2] |= 0x10;
@@ -1393,7 +1420,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         response[6] = scsi->fn.audio_cd ? scsi_audio_track_count(scsi) : 1;
         response[7] = 0x20; // unrestricted-use medium
         response[8] =
-            !scsi->fn.read_only && !scsi->optical_open && !scsi->optical_formatted ? 0xFF : 0;
+            !scsi->fn.read_only && !scsi->next_writable_lba && !scsi->optical_formatted ? 0xFF : 0;
         if(scsi->fn.read_only || scsi->optical_finalized) {
             memset(response + 16, 0xFF, 8);
         } else {
@@ -1685,7 +1712,25 @@ static bool scsi_finish_format(SCSISession* scsi) {
     scsi->reserved_blocks = 0;
     scsi->optical_open = false;
     scsi->optical_finalized = false;
-    return scsi->fn.sync(scsi->fn.ctx);
+    scsi->optical_multi_session = false;
+    return scsi_session_sync(scsi);
+}
+
+static bool scsi_finish_mode_select(SCSISession* scsi) {
+    if(scsi->mode_select.total < 9) return true;
+
+    uint8_t page = scsi->mode_select.parameters[8] & 0x3F;
+    if(page != 0x05 && (page != 0x0E || !scsi_audio_playback_supported(scsi))) {
+        scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_FIELD_IN_CDB, 0);
+        return false;
+    }
+
+    // The Multi-Session field controls whether CLOSE SESSION leaves a sequential CD
+    // appendable. The rest of the write parameters do not affect the file-backed recorder.
+    if(page == 0x05 && scsi->mode_select.total >= 12) {
+        scsi->optical_multi_session = (scsi->mode_select.parameters[11] & 0xC0) != 0;
+    }
+    return true;
 }
 
 static bool scsi_audio_play_range(SCSISession* scsi, uint32_t start_lba, uint32_t end_lba) {
@@ -1730,9 +1775,11 @@ bool scsi_cmd_end(SCSISession* scsi) {
     switch(cmd[0]) {
     case SCSI_WRITE_10:
     case SCSI_WRITE_12:
-    case SCSI_MODE_SELECT_10:
     case SCSI_SEND_CUE_SHEET:
         return scsi->rx_done;
+
+    case SCSI_MODE_SELECT_10:
+        return scsi->rx_done && scsi_finish_mode_select(scsi);
 
     case SCSI_REQUEST_SENSE:
     case SCSI_INQUIRY:
@@ -1803,7 +1850,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
             scsi_blank_cancel(scsi);
         }
         if(eject && !start) {
-            if(!scsi->fn.sync(scsi->fn.ctx)) return false;
+            if(!scsi_session_sync(scsi)) return false;
             if(scsi_audio_playback_supported(scsi) &&
                !scsi_audio_control(scsi, SCSIAudioControlStop, 0, 0)) {
                 return false;
@@ -1916,7 +1963,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
     }; break;
     case SCSI_SYNCHRONIZE_CACHE_10: {
         FURI_LOG_D(TAG, "SCSI_SYNCHRONIZE_CACHE_10");
-        return scsi->fn.sync(scsi->fn.ctx);
+        return scsi_session_sync(scsi);
     }; break;
     case SCSI_RESERVE_TRACK: {
         if(len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical || (cmd[1] & 1)) {
@@ -1941,8 +1988,11 @@ bool scsi_cmd_end(SCSISession* scsi) {
         if(close_function != 1 && close_function != 2) return false;
         FURI_LOG_D(TAG, "SCSI_CLOSE_TRACK_SESSION function=%u", close_function);
         if(!scsi->fn.sync(scsi->fn.ctx)) return false;
-        if(close_function == 2) scsi->optical_finalized = true;
-        return true;
+        if(close_function == 2) {
+            scsi->optical_open = false;
+            scsi->optical_finalized = !scsi->optical_multi_session;
+        }
+        return scsi_save_optical_state(scsi);
     }; break;
     case SCSI_BLANK: {
         scsi_start_blank(scsi, cmd[1] & 0x10);

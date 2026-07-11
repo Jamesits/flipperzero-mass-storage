@@ -364,6 +364,9 @@ static int32_t mass_thread_worker(void* context) {
     if(buf) {
         free(buf);
     }
+    if(!scsi_session_sync(&scsi)) {
+        FURI_LOG_W(TAG, "failed to sync SCSI session on shutdown");
+    }
     return 0;
 }
 
