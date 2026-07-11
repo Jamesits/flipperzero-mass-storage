@@ -34,6 +34,8 @@ typedef struct {
     bool (*sync)(void* ctx);
     void (*eject)(void* ctx);
     bool read_only;
+    // Advertise removable media so the host offers eject (required for exit on eject).
+    bool removable;
     MassStorageDeviceType device_type;
     uint32_t block_size;
 } SCSIDeviceFunc;
@@ -74,6 +76,8 @@ typedef struct {
     bool optical_open;
     bool optical_finalized;
 } SCSISession;
+
+bool scsi_is_usb_disk(MassStorageDeviceType device_type);
 
 bool scsi_cmd_start(
     SCSISession* scsi,

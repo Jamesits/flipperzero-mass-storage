@@ -44,7 +44,7 @@ static const char scsi_product_id[MassStorageDeviceTypeCount][17] = {
     [MassStorageDeviceTypeOptical] = "Optical Drive   ",
 };
 
-static bool scsi_is_usb_disk(MassStorageDeviceType device_type) {
+bool scsi_is_usb_disk(MassStorageDeviceType device_type) {
     return device_type == MassStorageDeviceTypeUsbSsd ||
            device_type == MassStorageDeviceTypeUsbHdd;
 }
@@ -369,7 +369,9 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
 
             uint8_t response[36] = {0};
             response[0] = scsi_peripheral_device_type[scsi->fn.device_type];
-            response[1] = 0x80; // removable: true
+            // USB disks default to fixed media, but must advertise removable when the
+            // host is expected to eject them (see SCSIDeviceFunc.removable).
+            response[1] = scsi->fn.removable ? 0x80 : 0x00;
             response[2] = scsi_is_usb_disk(scsi->fn.device_type) ? 0x06 : 0x04;
             response[3] = 0x02; // response data format
             response[4] = 31; // additional length (len - 5)

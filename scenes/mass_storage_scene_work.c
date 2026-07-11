@@ -215,6 +215,8 @@ void mass_storage_scene_work_on_enter(void* context) {
         .sync = file_sync,
         .eject = file_eject,
         .read_only = read_only,
+        // Removable media is a prerequisite for the host to send an eject command.
+        .removable = app->exit_on_eject,
         .device_type = app->device_type,
         .block_size = mass_storage_block_size(app),
     };
