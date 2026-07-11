@@ -10,6 +10,8 @@
 
 #define CD_RW_PACKET_SIZE (32UL)
 
+#define ULTRAISO_DISC_INFO_ALLOCATION (0x0800)
+
 #define SCSI_TEST_UNIT_READY        (0x00)
 #define SCSI_REZERO_UNIT            (0x01)
 #define SCSI_REQUEST_SENSE          (0x03)
@@ -1027,6 +1029,14 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             return false;
         }
         if(scsi->blank.active) {
+            uint16_t allocation_length = scsi->cmd[7] << 8 | scsi->cmd[8];
+            if(scsi->blank.immediate && allocation_length == ULTRAISO_DISC_INFO_ALLOCATION) {
+                // UltraISO polls with a 2 KiB buffer and decides that blanking completed from
+                // its first two bytes. Its buffer can remain stale after CHECK CONDITION on
+                // some Windows USB-storage stacks, so overwrite the length while staying busy.
+                const uint8_t response[2] = {0};
+                return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+            }
             scsi_set_sense(
                 scsi,
                 SCSI_SK_NOT_READY,
