@@ -23,7 +23,8 @@ Features:
 
 ### Raw Disk Images
 
-`.img` and `.raw` files are emulated as block devices, read-write and read-only configurable.
+`.img` and `.raw` files are emulated as block devices, read-write and read-only configurable. In CD-RW emulation mode,
+files without a valid UDF will be reported as empty / not formatted.
 
 ### ISO Images
 
