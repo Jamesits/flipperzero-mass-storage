@@ -120,12 +120,17 @@ static int32_t mass_thread_worker(void* context) {
                         usbd_ep_stall(dev, USB_MSC_RX_EP);
                         continue;
                     }
-                    if(!scsi_cmd_start(&scsi, cbw.cmd, cbw.cmd_len)) {
+                    if(!scsi_cmd_start(
+                           &scsi,
+                           cbw.cmd,
+                           cbw.cmd_len,
+                           cbw.len,
+                           cbw.flags & CBW_FLAGS_DEVICE_TO_HOST)) {
                         FURI_LOG_W(TAG, "bad cmd");
                         usbd_ep_stall(dev, USB_MSC_RX_EP);
                         csw.sig = CSW_SIG;
                         csw.tag = cbw.tag;
-                        csw.status = CSW_STATUS_NOK;
+                        csw.status = scsi.phase_error ? CSW_STATUS_PHASE_ERROR : CSW_STATUS_NOK;
                         csw.residue = cbw.len;
                         if((cbw.flags & CBW_FLAGS_DEVICE_TO_HOST) && cbw.len) {
                             state_after_zlp = StateWriteCSW;

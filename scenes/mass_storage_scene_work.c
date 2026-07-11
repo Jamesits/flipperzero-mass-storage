@@ -69,7 +69,7 @@ static bool file_write(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, ui
     MassStorageApp* app = ctx;
     uint32_t block_size = mass_storage_block_size(app);
     FURI_LOG_T(TAG, "file_write lba=%08lX count=%04X len=%08lX", lba, count, len);
-    if(app->read_only || app->device_type == MassStorageDeviceTypeOptical) return false;
+    if(app->read_only) return false;
     if(len != count * block_size) {
         FURI_LOG_W(TAG, "bad write params count=%u len=%lu", count, len);
         return false;
@@ -93,6 +93,15 @@ static bool file_write(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, ui
 
     app->bytes_written += len;
     return true;
+}
+
+static bool file_sync(void* ctx) {
+    MassStorageApp* app = ctx;
+    bool result = true;
+    for(uint8_t part = 0; part < app->file_count; part++) {
+        result = storage_file_sync(app->files[part]) && result;
+    }
+    return result;
 }
 
 static uint32_t file_num_blocks(void* ctx) {
@@ -151,6 +160,10 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
 
 void mass_storage_scene_work_on_enter(void* context) {
     MassStorageApp* app = context;
+    if(furi_string_end_withi(app->file_path, MASS_STORAGE_ISO_EXTENSION)) {
+        app->read_only = true;
+        app->device_type = MassStorageDeviceTypeOptical;
+    }
     app->bytes_read = app->bytes_written = 0;
     app->led_bytes_read = app->led_bytes_written = 0;
     app->led_blinking = false;
@@ -170,7 +183,7 @@ void mass_storage_scene_work_on_enter(void* context) {
 
     mass_storage_set_file_name(app->mass_storage_view, file_name);
     app->file_count = 0;
-    bool read_only = app->read_only || app->device_type == MassStorageDeviceTypeOptical;
+    bool read_only = app->read_only;
     FuriString* part_path = furi_string_alloc();
     for(uint8_t part = 0; part < MASS_STORAGE_MAX_FILE_PARTS; part++) {
         if(part == 0) {
@@ -199,6 +212,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .read = file_read,
         .write = file_write,
         .num_blocks = file_num_blocks,
+        .sync = file_sync,
         .eject = file_eject,
         .read_only = read_only,
         .device_type = app->device_type,

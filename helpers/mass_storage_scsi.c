@@ -18,8 +18,14 @@
 #define SCSI_GET_CONFIGURATION      (0x46)
 #define SCSI_GET_EVENT_STATUS       (0x4A)
 #define SCSI_READ_DISC_INFORMATION  (0x51)
+#define SCSI_READ_TRACK_INFORMATION (0x52)
+#define SCSI_RESERVE_TRACK          (0x53)
+#define SCSI_MODE_SELECT_10         (0x55)
 #define SCSI_MODE_SENSE_10          (0x5A)
+#define SCSI_CLOSE_TRACK_SESSION    (0x5B)
 #define SCSI_READ_12                (0xA8)
+#define SCSI_WRITE_12               (0xAA)
+#define SCSI_SET_CD_SPEED           (0xBB)
 #define SCSI_PREVENT_MEDIUM_REMOVAL (0x1E)
 #define SCSI_START_STOP_UNIT        (0x1B)
 #define SCSI_WRITE_10               (0x2A)
@@ -75,9 +81,69 @@ static uint32_t scsi_read_be32(const uint8_t* data) {
     return (uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 | (uint32_t)data[2] << 8 | data[3];
 }
 
+static void scsi_store_be32(uint8_t* data, uint32_t value) {
+    data[0] = value >> 24;
+    data[1] = value >> 16;
+    data[2] = value >> 8;
+    data[3] = value;
+}
+
+static uint8_t
+    scsi_mode_page(uint8_t* page, uint8_t page_code, uint8_t page_control, bool read_only) {
+    if(page_code == 0x01) {
+        page[0] = 0x01;
+        page[1] = 10;
+        return 12;
+    } else if(page_code == 0x05) {
+        page[0] = 0x05;
+        page[1] = 50;
+        if(page_control == 1) {
+            page[2] = 0x2F;
+            page[3] = 0x0F;
+            page[4] = 0x0F;
+            page[5] = 0xFF;
+        } else {
+            page[2] = 0x21; // valid link size, track-at-once
+            page[3] = 0x04; // Mode 1 data track
+            page[4] = 0x08; // 2048-byte Mode 1 user data
+            page[5] = 0x07;
+            page[14] = 0x00;
+            page[15] = 0x96;
+        }
+        return 52;
+    } else if(page_code == 0x08) {
+        page[0] = 0x08;
+        page[1] = 10;
+        // Do not advertise a volatile write cache. Reads remain cached.
+        return 12;
+    } else if(page_code == 0x2A) {
+        page[0] = 0x2A;
+        page[1] = 30;
+        if(page_control != 1) {
+            page[2] = 0x01; // read CD-R
+            page[3] = read_only ? 0x00 : 0x01; // write CD-R
+            page[6] = 0x29; // tray, eject and lock supported
+            page[8] = 0x1B; // 7056 KiB/s read speed
+            page[9] = 0x90;
+            page[12] = 0x00;
+            page[13] = 0x10; // 16 KiB buffer
+            page[14] = 0x1B;
+            page[15] = 0x90;
+            page[18] = 0x1B; // 7056 KiB/s write speed
+            page[19] = 0x90;
+            page[20] = 0x1B;
+            page[21] = 0x90;
+            page[28] = 0x1B;
+            page[29] = 0x90;
+        }
+        return 32;
+    }
+    return 0;
+}
+
 static bool
     scsi_mode_sense(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t cap, bool ten_byte) {
-    uint8_t response[20] = {0};
+    uint8_t response[120] = {0};
     uint8_t header_len = ten_byte ? 8 : 4;
     uint8_t response_len = header_len;
 
@@ -90,25 +156,24 @@ static bool
     if(scsi->fn.device_type == MassStorageDeviceTypeOptical) {
         uint8_t page_control = scsi->cmd[2] >> 6;
         uint8_t page_code = scsi->cmd[2] & 0x3F;
-        if(page_control == 3 || (page_code != 0x08 && page_code != 0x3F)) {
+        if(page_control == 3) {
             scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
             scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
             return false;
         }
 
-        uint8_t* page = response + header_len;
-        page[0] = 0x08; // caching page
-        page[1] = 10;
-        if(page_control != 1) {
-            page[2] = 0x04; // write cache enabled, read cache enabled
-            page[4] = 0xFF;
-            page[5] = 0xFF;
-            page[8] = 0xFF;
-            page[9] = 0xFF;
-            page[10] = 0xFF;
-            page[11] = 0xFF;
+        const uint8_t pages[] = {0x01, 0x05, 0x08, 0x2A};
+        for(uint8_t i = 0; i < COUNT_OF(pages); i++) {
+            if(page_code == pages[i] || page_code == 0x3F) {
+                response_len += scsi_mode_page(
+                    response + response_len, pages[i], page_control, scsi->fn.read_only);
+            }
         }
-        response_len += 12;
+        if(response_len == header_len) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+            return false;
+        }
     }
 
     if(ten_byte) {
@@ -120,7 +185,43 @@ static bool
     return scsi_tx_response(scsi, data, len, cap, response, response_len);
 }
 
-bool scsi_cmd_start(SCSISession* scsi, uint8_t* cmd, uint8_t len) {
+static bool scsi_start_write(
+    SCSISession* scsi,
+    uint32_t lba,
+    uint32_t count,
+    uint32_t transfer_len,
+    bool device_to_host) {
+    if(scsi->fn.read_only) {
+        scsi->sk = SCSI_SK_DATA_PROTECT;
+        scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+        return false;
+    }
+    uint64_t expected_len = (uint64_t)count * scsi->fn.block_size;
+    if(device_to_host || expected_len > UINT32_MAX || transfer_len != expected_len) {
+        scsi->phase_error = true;
+        return false;
+    }
+    uint32_t num_blocks = scsi->fn.num_blocks(scsi->fn.ctx);
+    if(lba > num_blocks || count > num_blocks - lba ||
+       (scsi->fn.device_type == MassStorageDeviceTypeOptical &&
+        (scsi->optical_finalized || lba != scsi->next_writable_lba))) {
+        scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+        scsi->asc = SCSI_ASC_LBA_OOB;
+        return false;
+    }
+    scsi->write.lba = lba;
+    scsi->write.count = count;
+    scsi->rx_done = count == 0;
+    return true;
+}
+
+bool scsi_cmd_start(
+    SCSISession* scsi,
+    uint8_t* cmd,
+    uint8_t len,
+    uint32_t transfer_len,
+    bool device_to_host) {
+    scsi->phase_error = false;
     if(!len) {
         scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
         scsi->asc = SCSI_ASC_INVALID_COMMAND_OPERATION_CODE;
@@ -134,14 +235,26 @@ bool scsi_cmd_start(SCSISession* scsi, uint8_t* cmd, uint8_t len) {
     switch(cmd[0]) {
     case SCSI_WRITE_10: {
         if(len < 10) return false;
-        if(scsi->fn.read_only) {
-            scsi->sk = SCSI_SK_DATA_PROTECT;
-            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+        uint32_t lba = scsi_read_be32(cmd + 2);
+        uint32_t count = cmd[7] << 8 | cmd[8];
+        FURI_LOG_D(TAG, "SCSI_WRITE_10 %08lX %04lX", lba, count);
+        return scsi_start_write(scsi, lba, count, transfer_len, device_to_host);
+    }; break;
+    case SCSI_WRITE_12: {
+        if(len < 12) return false;
+        uint32_t lba = scsi_read_be32(cmd + 2);
+        uint32_t count = scsi_read_be32(cmd + 6);
+        FURI_LOG_D(TAG, "SCSI_WRITE_12 %08lX %08lX", lba, count);
+        return scsi_start_write(scsi, lba, count, transfer_len, device_to_host);
+    }; break;
+    case SCSI_MODE_SELECT_10: {
+        if(len < 10 || !(cmd[1] & 0x10) || (cmd[1] & 0x01)) return false;
+        scsi->mode_select.remaining = cmd[7] << 8 | cmd[8];
+        if(device_to_host || transfer_len != scsi->mode_select.remaining) {
+            scsi->phase_error = true;
             return false;
         }
-        scsi->write_10.lba = scsi_read_be32(cmd + 2);
-        scsi->write_10.count = cmd[7] << 8 | cmd[8];
-        FURI_LOG_D(TAG, "SCSI_WRITE_10 %08lX %04X", scsi->write_10.lba, scsi->write_10.count);
+        scsi->rx_done = scsi->mode_select.remaining == 0;
         return true;
     }; break;
     case SCSI_READ_10: {
@@ -168,17 +281,40 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
     FURI_LOG_T(TAG, "RX %02X len %lu", scsi->cmd[0], len);
     if(scsi->rx_done) return false;
     switch(scsi->cmd[0]) {
-    case SCSI_WRITE_10: {
+    case SCSI_WRITE_10:
+    case SCSI_WRITE_12: {
         uint32_t block_size = scsi->fn.block_size;
+        if(len % block_size) return false;
         uint16_t blocks = len / block_size;
+        if(blocks > scsi->write.count) return false;
         bool result =
-            scsi->fn.write(scsi->fn.ctx, scsi->write_10.lba, blocks, data, blocks * block_size);
-        scsi->write_10.lba += blocks;
-        scsi->write_10.count -= blocks;
-        if(!scsi->write_10.count) {
+            scsi->fn.write(scsi->fn.ctx, scsi->write.lba, blocks, data, blocks * block_size);
+        if(!result) return false;
+        scsi->write.lba += blocks;
+        scsi->write.count -= blocks;
+        if(scsi->fn.device_type == MassStorageDeviceTypeOptical) {
+            scsi->next_writable_lba += blocks;
+            scsi->optical_open = true;
+        }
+        if(!scsi->write.count) {
             scsi->rx_done = true;
         }
-        return result;
+        return true;
+    }; break;
+    case SCSI_MODE_SELECT_10: {
+        if(len > scsi->mode_select.remaining) return false;
+        // Windows sends an 8-byte header followed by Write Parameters page 05h.
+        if(scsi->mode_select.remaining == (uint16_t)(scsi->cmd[7] << 8 | scsi->cmd[8])) {
+            if(len < 10 || data[6] || data[7] || (data[8] & 0x3F) != 0x05 || data[9] < 3 ||
+               (data[10] & 0x0F) > 1 || (data[11] & 0x20) || (data[12] & 0x0F) != 0x08) {
+                scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+                scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+                return false;
+            }
+        }
+        scsi->mode_select.remaining -= len;
+        scsi->rx_done = scsi->mode_select.remaining == 0;
+        return true;
     }; break;
     default: {
         FURI_LOG_W(TAG, "unexpected scsi rx data cmd=%02X", scsi->cmd[0]);
@@ -334,7 +470,29 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
 
         uint8_t format = scsi->cmd[2] & 0x0F;
         if(format == 0) format = scsi->cmd[9] >> 6;
-        if(format > 1) return false;
+        if(format == 4) {
+            uint8_t response[28] = {
+                0x00,
+                0x1A,
+                0x00,
+                0x00,
+                0xA0,
+                0x00,
+                0xB8,
+                0x00,
+                0x61,
+                0x22,
+                0x17,
+                0x00,
+            };
+            scsi_store_cdrom_address(response + 11, scsi->fn.num_blocks(scsi->fn.ctx), true);
+            return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+        }
+        if(format > 1 || (!scsi->fn.read_only && !scsi->optical_finalized)) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+            return false;
+        }
 
         uint8_t response[20] = {
             0x00, 0x12, 0x01, 0x01, 0x00, 0x14, 0x01, 0x00, 0x00, 0x00,
@@ -342,7 +500,9 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         };
         bool msf = scsi->cmd[1] & 0x02;
         scsi_store_cdrom_address(response + 8, 0, msf);
-        scsi_store_cdrom_address(response + 16, scsi->fn.num_blocks(scsi->fn.ctx), msf);
+        uint32_t lead_out = scsi->fn.read_only ? scsi->fn.num_blocks(scsi->fn.ctx) :
+                                                 scsi->next_writable_lba;
+        scsi_store_cdrom_address(response + 16, lead_out, msf);
         return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
     }; break;
     case SCSI_READ_HEADER: {
@@ -363,8 +523,40 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
     case SCSI_GET_CONFIGURATION: {
         FURI_LOG_D(TAG, "SCSI_GET_CONFIGURATION");
         if(scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
-        const uint8_t response[8] = {0, 0, 0, 4, 0, 0, 0, 8}; // current profile: CD-ROM
-        return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+        if(scsi->fn.read_only) {
+            const uint8_t response[8] = {0, 0, 0, 4, 0, 0, 0, 8};
+            return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+        }
+        const uint8_t features[] = {
+            0x00, 0x00, 0x03, 0x08, 0x00, 0x09, 0x01, 0x00, // profile list
+            0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x0B, 0x08,
+            0x00, 0x00, 0x00, 0x00, // core
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0B, 0x04,
+            0x29, 0x00, 0x00, 0x00, // removable medium
+            0x00, 0x10, 0x03, 0x08, 0x00, 0x00, 0x08, 0x00, // random readable
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x1E, 0x03, 0x04,
+            0x00, 0x00, 0x00, 0x00, // CD read
+            0x00, 0x2D, 0x09, 0x04, 0x00, 0x00, 0x01, 0x00, // CD TAO
+        };
+        uint8_t response[68] = {0};
+        uint8_t response_len = 8;
+        uint8_t request_type = scsi->cmd[1] & 0x03;
+        uint16_t starting_feature = scsi->cmd[2] << 8 | scsi->cmd[3];
+        if(request_type == 3) return false;
+        response[7] = 0x09; // current profile: CD-R
+        for(uint8_t offset = 0; offset < sizeof(features);) {
+            uint16_t feature = features[offset] << 8 | features[offset + 1];
+            uint8_t feature_len = features[offset + 3] + 4;
+            bool selected = request_type == 2 ? feature == starting_feature :
+                                                feature >= starting_feature;
+            if(selected) {
+                memcpy(response + response_len, features + offset, feature_len);
+                response_len += feature_len;
+            }
+            offset += feature_len;
+        }
+        scsi_store_be32(response, response_len - 4);
+        return scsi_tx_response(scsi, data, len, cap, response, response_len);
     }; break;
     case SCSI_GET_EVENT_STATUS: {
         FURI_LOG_D(TAG, "SCSI_GET_EVENT_STATUS");
@@ -375,10 +567,45 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
     case SCSI_READ_DISC_INFORMATION: {
         FURI_LOG_D(TAG, "SCSI_READ_DISC_INFORMATION");
         if(scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
-        const uint8_t response[34] = {
-            0x00, 0x20, 0x0E, 0x01, 0x01, 0x01, 0x01, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0,    0,    0,    0,    0,    0,    0,    0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
-        };
+        uint8_t response[34] = {0};
+        response[1] = 0x20;
+        response[2] = scsi->fn.read_only || scsi->optical_finalized ? 0x0E :
+                      scsi->optical_open                            ? 0x05 :
+                                                                      0x00;
+        response[3] = 0x01;
+        response[4] = 0x01;
+        response[5] = 0x01;
+        response[6] = 0x01;
+        scsi_store_cdrom_address(response + 20, scsi->fn.num_blocks(scsi->fn.ctx), true);
+        return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+    }; break;
+    case SCSI_READ_TRACK_INFORMATION: {
+        FURI_LOG_D(TAG, "SCSI_READ_TRACK_INFORMATION");
+        if(scsi->fn.device_type != MassStorageDeviceTypeOptical || scsi->cmd_len < 10)
+            return false;
+        uint8_t address_type = scsi->cmd[1] & 0x03;
+        uint32_t address = scsi_read_be32(scsi->cmd + 2);
+        if(address_type != 1 || (address != 1 && address != 0xFF)) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
+            return false;
+        }
+        uint8_t response[48] = {0};
+        uint32_t num_blocks = scsi->fn.num_blocks(scsi->fn.ctx);
+        bool writable = !scsi->fn.read_only && !scsi->optical_finalized;
+        uint32_t recorded_blocks = scsi->fn.read_only ? num_blocks : scsi->next_writable_lba;
+        response[1] = 0x2E;
+        response[2] = 0x01;
+        response[3] = 0x01;
+        response[5] = 0x04;
+        response[6] = recorded_blocks ? 0x01 : 0x41;
+        response[7] = (writable ? 0x01 : 0x00) | (recorded_blocks ? 0x02 : 0x00);
+        if(writable) {
+            scsi_store_be32(response + 12, scsi->next_writable_lba);
+            scsi_store_be32(response + 16, num_blocks - scsi->next_writable_lba);
+        }
+        scsi_store_be32(response + 24, writable ? num_blocks : recorded_blocks);
+        if(recorded_blocks) scsi_store_be32(response + 28, recorded_blocks - 1);
         return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
     }; break;
     case SCSI_READ_10: {
@@ -412,6 +639,8 @@ bool scsi_cmd_end(SCSISession* scsi) {
     scsi->cmd_len = 0;
     switch(cmd[0]) {
     case SCSI_WRITE_10:
+    case SCSI_WRITE_12:
+    case SCSI_MODE_SELECT_10:
         return scsi->rx_done;
 
     case SCSI_REQUEST_SENSE:
@@ -425,6 +654,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
     case SCSI_GET_CONFIGURATION:
     case SCSI_GET_EVENT_STATUS:
     case SCSI_READ_DISC_INFORMATION:
+    case SCSI_READ_TRACK_INFORMATION:
     case SCSI_READ_10:
     case SCSI_READ_12:
         return scsi->tx_done;
@@ -456,7 +686,35 @@ bool scsi_cmd_end(SCSISession* scsi) {
     }; break;
     case SCSI_SYNCHRONIZE_CACHE_10: {
         FURI_LOG_D(TAG, "SCSI_SYNCHRONIZE_CACHE_10");
+        return scsi->fn.sync(scsi->fn.ctx);
+    }; break;
+    case SCSI_RESERVE_TRACK: {
+        if(len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical || (cmd[1] & 1)) {
+            return false;
+        }
+        uint32_t blocks = scsi_read_be32(cmd + 5);
+        uint32_t remaining = scsi->fn.num_blocks(scsi->fn.ctx) - scsi->next_writable_lba;
+        if(blocks > remaining) {
+            scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
+            scsi->asc = SCSI_ASC_LBA_OOB;
+            return false;
+        }
+        scsi->reserved_blocks = blocks;
+        FURI_LOG_D(TAG, "SCSI_RESERVE_TRACK %08lX", blocks);
         return true;
+    }; break;
+    case SCSI_CLOSE_TRACK_SESSION: {
+        if(len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        uint8_t close_function = cmd[2] & 0x07;
+        if(close_function != 1 && close_function != 2) return false;
+        FURI_LOG_D(TAG, "SCSI_CLOSE_TRACK_SESSION function=%u", close_function);
+        if(!scsi->fn.sync(scsi->fn.ctx)) return false;
+        if(close_function == 2) scsi->optical_finalized = true;
+        return true;
+    }; break;
+    case SCSI_SET_CD_SPEED: {
+        FURI_LOG_D(TAG, "SCSI_SET_CD_SPEED");
+        return scsi->fn.device_type == MassStorageDeviceTypeOptical;
     }; break;
     default: {
         FURI_LOG_W(TAG, "unexpected scsi cmd=%02X", cmd[0]);

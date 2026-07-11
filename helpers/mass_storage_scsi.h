@@ -31,6 +31,7 @@ typedef struct {
         uint32_t out_cap);
     bool (*write)(void* ctx, uint32_t lba, uint16_t count, uint8_t* buf, uint32_t len);
     uint32_t (*num_blocks)(void* ctx);
+    bool (*sync)(void* ctx);
     void (*eject)(void* ctx);
     bool read_only;
     MassStorageDeviceType device_type;
@@ -44,6 +45,7 @@ typedef struct {
     uint8_t cmd_len;
     bool rx_done;
     bool tx_done;
+    bool phase_error;
 
     uint8_t sk; // sense key
     uint8_t asc; // additional sense code
@@ -57,13 +59,27 @@ typedef struct {
         } read;
 
         struct {
-            uint16_t count;
+            uint32_t count;
             uint32_t lba;
-        } write_10; // SCSI_WRITE_10
+        } write;
+
+        struct {
+            uint16_t remaining;
+        } mode_select;
     };
+
+    uint32_t next_writable_lba;
+    uint32_t reserved_blocks;
+    bool optical_open;
+    bool optical_finalized;
 } SCSISession;
 
-bool scsi_cmd_start(SCSISession* scsi, uint8_t* cmd, uint8_t len);
+bool scsi_cmd_start(
+    SCSISession* scsi,
+    uint8_t* cmd,
+    uint8_t len,
+    uint32_t transfer_len,
+    bool device_to_host);
 bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len);
 bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t cap);
 bool scsi_cmd_end(SCSISession* scsi);

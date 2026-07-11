@@ -5,7 +5,7 @@ static bool mass_storage_file_select(MassStorageApp* mass_storage) {
 
     DialogsFileBrowserOptions browser_options;
     dialog_file_browser_set_basic_options(
-        &browser_options, MASS_STORAGE_APP_EXTENSION, &I_mass_storage_10px);
+        &browser_options, MASS_STORAGE_APP_IMAGE_EXTENSIONS, &I_mass_storage_10px);
     browser_options.base_path = MASS_STORAGE_APP_PATH_FOLDER;
     browser_options.hide_ext = false;
 

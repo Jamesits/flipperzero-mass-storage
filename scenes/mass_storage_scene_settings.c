@@ -34,11 +34,20 @@ static void mass_storage_device_type(VariableItem* item) {
 
 void mass_storage_scene_settings_on_enter(void* context) {
     MassStorageApp* app = context;
+    bool is_iso = furi_string_end_withi(app->file_path, MASS_STORAGE_ISO_EXTENSION);
+    if(is_iso) {
+        app->read_only = true;
+        app->device_type = MassStorageDeviceTypeOptical;
+    }
 
     variable_item_list_add(app->variable_item_list, "Start", 0, NULL, NULL);
 
     VariableItem* read_only_item = variable_item_list_add(
-        app->variable_item_list, "Read only", 2, mass_storage_read_only, app);
+        app->variable_item_list,
+        "Read only",
+        is_iso ? 1 : 2,
+        is_iso ? NULL : mass_storage_read_only,
+        app);
 
     VariableItem* exit_on_eject_item = variable_item_list_add(
         app->variable_item_list, "Exit on eject", 2, mass_storage_exit_on_eject, app);
@@ -46,18 +55,18 @@ void mass_storage_scene_settings_on_enter(void* context) {
     VariableItem* device_type_item = variable_item_list_add(
         app->variable_item_list,
         "Report as",
-        MassStorageDeviceTypeCount,
-        mass_storage_device_type,
+        is_iso ? 1 : MassStorageDeviceTypeCount,
+        is_iso ? NULL : mass_storage_device_type,
         app);
 
     variable_item_list_set_enter_callback(
         app->variable_item_list, mass_storage_settings_select, app);
 
-    variable_item_set_current_value_index(read_only_item, app->read_only);
+    variable_item_set_current_value_index(read_only_item, is_iso ? 0 : app->read_only);
     variable_item_set_current_value_text(read_only_item, app->read_only ? "On" : "Off");
     variable_item_set_current_value_index(exit_on_eject_item, app->exit_on_eject);
     variable_item_set_current_value_text(exit_on_eject_item, app->exit_on_eject ? "On" : "Off");
-    variable_item_set_current_value_index(device_type_item, app->device_type);
+    variable_item_set_current_value_index(device_type_item, is_iso ? 0 : app->device_type);
     variable_item_set_current_value_text(device_type_item, device_type_names[app->device_type]);
 
     mass_storage_app_show_loading_popup(app, false);
