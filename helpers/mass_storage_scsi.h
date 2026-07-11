@@ -46,6 +46,7 @@ typedef struct {
     bool rx_done;
     bool tx_done;
     bool phase_error;
+    bool eject_pending;
 
     uint8_t sk; // sense key
     uint8_t asc; // additional sense code

@@ -280,6 +280,11 @@ static int32_t mass_thread_worker(void* context) {
                     memset(&csw, 0, sizeof(csw));
                     data_sent = 0;
                     state = StateReadCBW;
+                    if(scsi.eject_pending) {
+                        scsi.eject_pending = false;
+                        scsi.fn.eject(scsi.fn.ctx);
+                        break;
+                    }
                     continue;
                 }; break;
                 }

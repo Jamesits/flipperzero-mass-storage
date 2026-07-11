@@ -222,6 +222,7 @@ bool scsi_cmd_start(
     uint32_t transfer_len,
     bool device_to_host) {
     scsi->phase_error = false;
+    scsi->eject_pending = false;
     if(!len) {
         scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
         scsi->asc = SCSI_ASC_INVALID_COMMAND_OPERATION_CODE;
@@ -675,7 +676,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         bool start = (cmd[4] & 1) != 0;
         FURI_LOG_D(TAG, "SCSI_START_STOP_UNIT eject=%d start=%d", eject, start);
         if(eject && !start) {
-            scsi->fn.eject(scsi->fn.ctx);
+            scsi->eject_pending = true;
         }
         return true;
     }; break;
