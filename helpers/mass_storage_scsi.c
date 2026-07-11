@@ -26,6 +26,7 @@
 #define SCSI_READ_12                (0xA8)
 #define SCSI_WRITE_12               (0xAA)
 #define SCSI_SET_CD_SPEED           (0xBB)
+#define SCSI_BLANK                  (0xA1)
 #define SCSI_PREVENT_MEDIUM_REMOVAL (0x1E)
 #define SCSI_START_STOP_UNIT        (0x1B)
 #define SCSI_WRITE_10               (0x2A)
@@ -120,8 +121,8 @@ static uint8_t
         page[0] = 0x2A;
         page[1] = 30;
         if(page_control != 1) {
-            page[2] = 0x01; // read CD-R
-            page[3] = read_only ? 0x00 : 0x01; // write CD-R
+            page[2] = 0x03; // read CD-R and CD-RW
+            page[3] = read_only ? 0x00 : 0x03; // write CD-R and CD-RW
             page[6] = 0x29; // tray, eject and lock supported
             page[8] = 0x1B; // 7056 KiB/s read speed
             page[9] = 0x90;
@@ -488,6 +489,8 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
                 0x17,
                 0x00,
             };
+            // ATIP disc type bit (byte 6, bit 6): set for rewritable CD-RW media.
+            if(!scsi->fn.read_only) response[6] |= 0x40;
             scsi_store_cdrom_address(response + 11, scsi->fn.num_blocks(scsi->fn.ctx), true);
             return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
         }
@@ -531,7 +534,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
         }
         const uint8_t features[] = {
-            0x00, 0x00, 0x03, 0x08, 0x00, 0x09, 0x01, 0x00, // profile list
+            0x00, 0x00, 0x03, 0x08, 0x00, 0x0A, 0x01, 0x00, // profile list
             0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x0B, 0x08,
             0x00, 0x00, 0x00, 0x00, // core
             0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0B, 0x04,
@@ -546,7 +549,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         uint8_t request_type = scsi->cmd[1] & 0x03;
         uint16_t starting_feature = scsi->cmd[2] << 8 | scsi->cmd[3];
         if(request_type == 3) return false;
-        response[7] = 0x09; // current profile: CD-R
+        response[7] = 0x0A; // current profile: CD-RW
         for(uint8_t offset = 0; offset < sizeof(features);) {
             uint16_t feature = features[offset] << 8 | features[offset + 1];
             uint8_t feature_len = features[offset + 3] + 4;
@@ -575,6 +578,8 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         response[2] = scsi->fn.read_only || scsi->optical_finalized ? 0x0E :
                       scsi->optical_open                            ? 0x05 :
                                                                       0x00;
+        // Erasable bit: rewritable CD-RW media can be blanked and rewritten.
+        if(!scsi->fn.read_only) response[2] |= 0x10;
         response[3] = 0x01;
         response[4] = 0x01;
         response[5] = 0x01;
@@ -713,6 +718,22 @@ bool scsi_cmd_end(SCSISession* scsi) {
         FURI_LOG_D(TAG, "SCSI_CLOSE_TRACK_SESSION function=%u", close_function);
         if(!scsi->fn.sync(scsi->fn.ctx)) return false;
         if(close_function == 2) scsi->optical_finalized = true;
+        return true;
+    }; break;
+    case SCSI_BLANK: {
+        if(len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        if(scsi->fn.read_only) {
+            scsi->sk = SCSI_SK_DATA_PROTECT;
+            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+            return false;
+        }
+        FURI_LOG_D(TAG, "SCSI_BLANK");
+        // Fast blank: reset the recording state so the medium reads back as an empty,
+        // writable disc. Existing backing-file contents are overwritten as data is rewritten.
+        scsi->next_writable_lba = 0;
+        scsi->reserved_blocks = 0;
+        scsi->optical_open = false;
+        scsi->optical_finalized = false;
         return true;
     }; break;
     case SCSI_SET_CD_SPEED: {
