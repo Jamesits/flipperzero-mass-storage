@@ -5,6 +5,7 @@
 #define TAG "MassStorageSCSI"
 
 #define SCSI_TEST_UNIT_READY        (0x00)
+#define SCSI_REZERO_UNIT            (0x01)
 #define SCSI_REQUEST_SENSE          (0x03)
 #define SCSI_FORMAT_UNIT            (0x04)
 #define SCSI_INQUIRY                (0x12)
@@ -794,6 +795,12 @@ bool scsi_cmd_end(SCSISession* scsi) {
 
     case SCSI_TEST_UNIT_READY: {
         FURI_LOG_D(TAG, "SCSI_TEST_UNIT_READY");
+        return true;
+    }; break;
+    case SCSI_REZERO_UNIT: {
+        // Obsolete "seek to LBA 0". There is no physical mechanism to move, so acknowledge it
+        // as a no-op; some hosts still issue it and expect GOOD status.
+        FURI_LOG_D(TAG, "SCSI_REZERO_UNIT");
         return true;
     }; break;
     case SCSI_PREVENT_MEDIUM_REMOVAL: {
