@@ -1,6 +1,7 @@
 #include "mass_storage_scsi.h"
 
 #include <core/log.h>
+#include <furi_hal_version.h>
 
 #define TAG "MassStorageSCSI"
 
@@ -499,9 +500,22 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             response[3] = response_len - 4;
             return scsi_tx_response(scsi, data, len, cap, response, response_len);
         } else if(page_code == 0x80) {
-            const uint8_t response[5] = {
-                scsi_peripheral_device_type[scsi->fn.device_type], 0x80, 0x00, 0x01, '0'};
-            return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
+            // Unit Serial Number page: report the Flipper's real UID (STM32 96-bit unique ID)
+            // as an ASCII hex string.
+            const uint8_t* uid = furi_hal_version_uid();
+            size_t uid_size = furi_hal_version_uid_size();
+            // Cap the UID so the whole page fits the fixed response buffer and the single-byte
+            // page-length field.
+            if(uid_size > 16) uid_size = 16;
+            uint8_t serial_len = uid_size * 2;
+            uint8_t response[4 + 16 * 2] = {
+                scsi_peripheral_device_type[scsi->fn.device_type], 0x80, 0x00, serial_len};
+            static const char hex[] = "0123456789ABCDEF";
+            for(size_t i = 0; i < uid_size; i++) {
+                response[4 + i * 2] = hex[uid[i] >> 4];
+                response[4 + i * 2 + 1] = hex[uid[i] & 0x0F];
+            }
+            return scsi_tx_response(scsi, data, len, cap, response, 4 + serial_len);
         } else if(page_code == 0xB1 && scsi_is_usb_disk(scsi->fn.device_type)) {
             uint8_t response[64] = {0};
             uint16_t rotation_rate = scsi->fn.device_type == MassStorageDeviceTypeUsbSsd ? 1 :
