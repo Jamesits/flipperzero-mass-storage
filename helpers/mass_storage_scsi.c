@@ -6,6 +6,7 @@
 
 #define SCSI_TEST_UNIT_READY        (0x00)
 #define SCSI_REQUEST_SENSE          (0x03)
+#define SCSI_FORMAT_UNIT            (0x04)
 #define SCSI_INQUIRY                (0x12)
 #define SCSI_READ_FORMAT_CAPACITIES (0x23)
 #define SCSI_READ_CAPACITY_10       (0x25)
@@ -203,9 +204,13 @@ static bool scsi_start_write(
         return false;
     }
     uint32_t num_blocks = scsi->fn.num_blocks(scsi->fn.ctx);
-    if(lba > num_blocks || count > num_blocks - lba ||
-       (scsi->fn.device_type == MassStorageDeviceTypeOptical &&
-        (scsi->optical_finalized || lba != scsi->next_writable_lba))) {
+    // A formatted CD-RW allows random overwrite anywhere; otherwise recording is
+    // sequential and must continue at the next writable address.
+    bool bad_lba = lba > num_blocks || count > num_blocks - lba;
+    if(scsi->fn.device_type == MassStorageDeviceTypeOptical && !scsi->optical_formatted) {
+        bad_lba = bad_lba || scsi->optical_finalized || lba != scsi->next_writable_lba;
+    }
+    if(bad_lba) {
         scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
         scsi->asc = SCSI_ASC_LBA_OOB;
         return false;
@@ -259,6 +264,23 @@ bool scsi_cmd_start(
         scsi->rx_done = scsi->mode_select.remaining == 0;
         return true;
     }; break;
+    case SCSI_FORMAT_UNIT: {
+        if(len < 6 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        if(scsi->fn.read_only) {
+            scsi->sk = SCSI_SK_DATA_PROTECT;
+            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+            return false;
+        }
+        // FMTDATA set means a format parameter list follows in the data-out phase.
+        scsi->format.remaining = (cmd[1] & 0x10) ? (uint16_t)transfer_len : 0;
+        if(device_to_host || transfer_len != scsi->format.remaining) {
+            scsi->phase_error = true;
+            return false;
+        }
+        scsi->rx_done = scsi->format.remaining == 0;
+        FURI_LOG_D(TAG, "SCSI_FORMAT_UNIT %04X", scsi->format.remaining);
+        return true;
+    }; break;
     case SCSI_READ_10: {
         if(len < 10) return false;
         scsi->read.lba = scsi_read_be32(cmd + 2);
@@ -294,7 +316,9 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
         if(!result) return false;
         scsi->write.lba += blocks;
         scsi->write.count -= blocks;
-        if(scsi->fn.device_type == MassStorageDeviceTypeOptical) {
+        // Track the next writable address only for sequential recording; a formatted
+        // CD-RW is overwritten in place and has no moving write pointer.
+        if(scsi->fn.device_type == MassStorageDeviceTypeOptical && !scsi->optical_formatted) {
             scsi->next_writable_lba += blocks;
             scsi->optical_open = true;
         }
@@ -305,10 +329,11 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
     }; break;
     case SCSI_MODE_SELECT_10: {
         if(len > scsi->mode_select.remaining) return false;
-        // Windows sends an 8-byte header followed by Write Parameters page 05h.
+        // Windows sends an 8-byte header followed by Write Parameters page 05h. Accept both
+        // track-at-once (mastered) and packet (restricted overwrite) write types.
         if(scsi->mode_select.remaining == (uint16_t)(scsi->cmd[7] << 8 | scsi->cmd[8])) {
             if(len < 10 || data[6] || data[7] || (data[8] & 0x3F) != 0x05 || data[9] < 3 ||
-               (data[10] & 0x0F) > 1 || (data[11] & 0x20) || (data[12] & 0x0F) != 0x08) {
+               (data[10] & 0x0F) > 1 || (data[12] & 0x0F) != 0x08) {
                 scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
                 scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
                 return false;
@@ -316,6 +341,14 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
         }
         scsi->mode_select.remaining -= len;
         scsi->rx_done = scsi->mode_select.remaining == 0;
+        return true;
+    }; break;
+    case SCSI_FORMAT_UNIT: {
+        // The format parameter list only selects capacity/defect options we do not need to
+        // honour for a file-backed medium; accept it and apply the format in scsi_cmd_end.
+        if(len > scsi->format.remaining) return false;
+        scsi->format.remaining -= len;
+        scsi->rx_done = scsi->format.remaining == 0;
         return true;
     }; break;
     default: {
@@ -433,7 +466,12 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         data[5] = n_blocks >> 16;
         data[6] = n_blocks >> 8;
         data[7] = n_blocks & 0xFF;
-        data[8] = 0x02; // Formatted media
+        // A writable CD-RW reads back as unformatted until the host runs FORMAT UNIT, which
+        // is what makes the host offer the "like a USB drive" (Live File System) option.
+        data[8] = (scsi->fn.device_type == MassStorageDeviceTypeOptical && !scsi->fn.read_only &&
+                   !scsi->optical_formatted) ?
+                      0x01 : // Unformatted media
+                      0x02; // Formatted media
         data[9] = block_size >> 16;
         data[10] = block_size >> 8;
         data[11] = block_size & 0xFF;
@@ -542,9 +580,11 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             0x00, 0x10, 0x03, 0x08, 0x00, 0x00, 0x08, 0x00, // random readable
             0x00, 0x01, 0x01, 0x00, 0x00, 0x1E, 0x03, 0x04,
             0x00, 0x00, 0x00, 0x00, // CD read
+            0x00, 0x23, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, // formattable
+            0x00, 0x26, 0x01, 0x00, // restricted overwrite (current once formatted)
             0x00, 0x2D, 0x09, 0x04, 0x00, 0x00, 0x01, 0x00, // CD TAO
         };
-        uint8_t response[68] = {0};
+        uint8_t response[96] = {0};
         uint8_t response_len = 8;
         uint8_t request_type = scsi->cmd[1] & 0x03;
         uint16_t starting_feature = scsi->cmd[2] << 8 | scsi->cmd[3];
@@ -555,6 +595,8 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             uint8_t feature_len = features[offset + 3] + 4;
             bool selected = request_type == 2 ? feature == starting_feature :
                                                 feature >= starting_feature;
+            // Restricted overwrite only becomes available after the medium is formatted.
+            if(feature == 0x0026 && !scsi->optical_formatted) selected = false;
             if(selected) {
                 memcpy(response + response_len, features + offset, feature_len);
                 response_len += feature_len;
@@ -575,8 +617,10 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
         if(scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
         uint8_t response[34] = {0};
         response[1] = 0x20;
+        // A formatted CD-RW is appendable (in use), an open track is appendable too, and a
+        // blank medium is empty. Read-only or finalized media reports complete.
         response[2] = scsi->fn.read_only || scsi->optical_finalized ? 0x0E :
-                      scsi->optical_open                            ? 0x05 :
+                      scsi->optical_open || scsi->optical_formatted ? 0x05 :
                                                                       0x00;
         // Erasable bit: rewritable CD-RW media can be blanked and rewritten.
         if(!scsi->fn.read_only) response[2] |= 0x10;
@@ -732,6 +776,20 @@ bool scsi_cmd_end(SCSISession* scsi) {
         // writable disc. Existing backing-file contents are overwritten as data is rewritten.
         scsi->next_writable_lba = 0;
         scsi->reserved_blocks = 0;
+        scsi->optical_open = false;
+        scsi->optical_finalized = false;
+        scsi->optical_formatted = false;
+        return true;
+    }; break;
+    case SCSI_FORMAT_UNIT: {
+        if(scsi->fn.device_type != MassStorageDeviceTypeOptical || scsi->fn.read_only) {
+            return false;
+        }
+        if(!scsi->rx_done) return false;
+        FURI_LOG_D(TAG, "SCSI_FORMAT_UNIT done");
+        // Formatting makes the whole medium randomly overwritable (restricted overwrite).
+        scsi->optical_formatted = true;
+        scsi->next_writable_lba = 0;
         scsi->optical_open = false;
         scsi->optical_finalized = false;
         return true;

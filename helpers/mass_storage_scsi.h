@@ -72,12 +72,17 @@ typedef struct {
         struct {
             uint16_t remaining;
         } mode_select;
+
+        struct {
+            uint16_t remaining;
+        } format;
     };
 
     uint32_t next_writable_lba;
     uint32_t reserved_blocks;
     bool optical_open;
     bool optical_finalized;
+    bool optical_formatted;
 } SCSISession;
 
 bool scsi_is_usb_disk(MassStorageDeviceType device_type);
