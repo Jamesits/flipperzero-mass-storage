@@ -59,6 +59,7 @@ struct AudioCd {
     FuriMutex* state_mutex;
     FuriMutex* file_mutex;
     FuriThread* thread;
+    AudioCdOutput output;
     bool thread_started;
     bool output_ready;
     volatile uint32_t generation;
@@ -711,7 +712,10 @@ static bool audio_cd_prepare_output(AudioCd* cd) {
     }
 
     memset(cd->dma_buffer, UINT8_MAX / 2, AUDIO_CD_DMA_SAMPLES);
-    audio_cd_hal_init(AUDIO_CD_SAMPLE_RATE);
+    audio_cd_hal_init(
+        AUDIO_CD_SAMPLE_RATE,
+        (cd->output & AudioCdOutputSpeaker) != 0,
+        (cd->output & AudioCdOutputExternal) != 0);
     audio_cd_hal_dma_stop();
     cd->output_ready = true;
     furi_hal_interrupt_set_isr(FuriHalInterruptIdDma1Ch1, audio_cd_dma_isr, cd);
@@ -781,9 +785,14 @@ static bool audio_cd_start_player(AudioCd* cd) {
     return true;
 }
 
-AudioCd* audio_cd_alloc(Storage* storage, const char* cue_path, FuriString* error) {
+AudioCd* audio_cd_alloc(
+    Storage* storage,
+    const char* cue_path,
+    AudioCdOutput output,
+    FuriString* error) {
     furi_assert(storage);
     furi_assert(cue_path);
+    furi_assert(output < AudioCdOutputCount);
 
     AudioCd* cd = malloc(sizeof(AudioCd));
     if(!cd) {
@@ -792,6 +801,7 @@ AudioCd* audio_cd_alloc(Storage* storage, const char* cue_path, FuriString* erro
     }
     memset(cd, 0, sizeof(AudioCd));
     cd->storage = storage;
+    cd->output = output;
     cd->bin_path = furi_string_alloc();
 
     FURI_LOG_I(TAG, "Parsing CUE %s", cue_path);

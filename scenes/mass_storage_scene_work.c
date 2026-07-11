@@ -11,6 +11,10 @@ static uint32_t mass_storage_block_size(MassStorageApp* app) {
     return app->device_type == MassStorageDeviceTypeOptical ? 2048 : SCSI_BLOCK_SIZE;
 }
 
+static bool mass_storage_audio_playback_enabled(const MassStorageApp* app) {
+    return app->audio_cd && app->audio_output != AudioCdOutputOff;
+}
+
 static uint32_t mass_storage_file_block_size(MassStorageApp* app) {
     return app->audio_cd ? AUDIO_CD_SECTOR_SIZE : mass_storage_block_size(app);
 }
@@ -334,7 +338,7 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
         }
     } else if(event.type == SceneManagerEventTypeTick) {
         bool usb_connected = mass_storage_usb_is_connected(app);
-        if(app->audio_cd) {
+        if(mass_storage_audio_playback_enabled(app)) {
             mass_storage_update_audio_view(app);
         } else {
             mass_storage_set_stats(app->mass_storage_view, app->bytes_read, app->bytes_written);
@@ -404,7 +408,8 @@ void mass_storage_scene_work_on_enter(void* context) {
     if(is_audio_cue) {
         FuriString* error = furi_string_alloc();
         FURI_LOG_I(TAG, "Loading audio CUE");
-        app->audio_cd = audio_cd_alloc(app->fs_api, furi_string_get_cstr(app->file_path), error);
+        app->audio_cd = audio_cd_alloc(
+            app->fs_api, furi_string_get_cstr(app->file_path), app->audio_output, error);
         if(!app->audio_cd) {
             mass_storage_app_show_loading_popup(app, false);
             dialog_message_show_storage_error(app->dialogs, furi_string_get_cstr(error));
@@ -468,7 +473,7 @@ void mass_storage_scene_work_on_enter(void* context) {
         .audio_track_count = file_audio_track_count,
         .audio_track_info = file_audio_track_info,
         .audio_get_status = file_audio_get_status,
-        .audio_control = file_audio_control,
+        .audio_control = mass_storage_audio_playback_enabled(app) ? file_audio_control : NULL,
         .read_only = read_only,
         // Removable media is a prerequisite for the host to send an eject command.
         .removable = app->audio_cd || app->exit_on_eject != MassStorageExitOnEjectOff,
@@ -495,7 +500,7 @@ void mass_storage_scene_work_on_enter(void* context) {
     // Disk enabled but awaiting a host: yellow. Connected and idle: blue.
     mass_storage_set_idle_led(app, mass_storage_usb_is_connected(app));
 
-    if(app->audio_cd) {
+    if(mass_storage_audio_playback_enabled(app)) {
         mass_storage_set_audio_mode(app->mass_storage_view, true);
         mass_storage_set_input_callback(app->mass_storage_view, mass_storage_audio_input, app);
         mass_storage_update_audio_view(app);

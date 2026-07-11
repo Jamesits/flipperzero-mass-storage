@@ -166,6 +166,10 @@ static uint32_t scsi_medium_blocks(SCSISession* scsi) {
 
 static void scsi_set_sense(SCSISession* scsi, uint8_t sk, uint8_t asc, uint8_t ascq);
 
+static bool scsi_audio_playback_supported(const SCSISession* scsi) {
+    return scsi->fn.audio_cd && scsi->fn.audio_control;
+}
+
 static uint8_t scsi_audio_track_count(SCSISession* scsi) {
     if(!scsi->fn.audio_cd || !scsi->fn.audio_track_count) return 0;
     return scsi->fn.audio_track_count(scsi->fn.ctx);
@@ -198,8 +202,11 @@ static bool scsi_audio_control(
     SCSIAudioControl control,
     uint32_t start_lba,
     uint32_t end_lba) {
-    if(!scsi->fn.audio_cd || !scsi->fn.audio_control ||
-       !scsi->fn.audio_control(scsi->fn.ctx, control, start_lba, end_lba)) {
+    if(!scsi_audio_playback_supported(scsi)) {
+        scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_COMMAND_OPERATION_CODE, 0);
+        return false;
+    }
+    if(!scsi->fn.audio_control(scsi->fn.ctx, control, start_lba, end_lba)) {
         scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_ILLEGAL_MODE_FOR_TRACK, 0);
         return false;
     }
@@ -381,7 +388,7 @@ static uint8_t
         page[1] = 10;
         // Do not advertise a volatile write cache. Reads remain cached.
         return 12;
-    } else if(page_code == 0x0E && scsi->fn.audio_cd) {
+    } else if(page_code == 0x0E && scsi_audio_playback_supported(scsi)) {
         page[0] = 0x0E;
         page[1] = 14;
         if(page_control != 1) {
@@ -398,7 +405,7 @@ static uint8_t
         if(page_control != 1) {
             page[2] = 0x03; // read CD-R and CD-RW
             page[3] = read_only ? 0x00 : 0x03; // write CD-R and CD-RW
-            page[4] = 0xC0 | (scsi->fn.audio_cd ? 0x01 : 0x00);
+            page[4] = 0xC0 | (scsi_audio_playback_supported(scsi) ? 0x01 : 0x00);
             if(scsi->fn.audio_cd) page[5] = 0x03; // CD-DA commands and accurate streaming
             page[6] = 0x29; // tray, eject and lock supported
             page[8] = 0x01; // 353 KB/s (2x) max read speed
@@ -734,8 +741,13 @@ bool scsi_cmd_start(
     case SCSI_STOP_PLAY_SCAN:
     case SCSI_PLAY_AUDIO_12:
     case SCSI_SCAN:
-        if(!scsi->fn.audio_cd || transfer_len) {
-            if(transfer_len) scsi->phase_error = true;
+        if(!scsi_audio_playback_supported(scsi)) {
+            scsi_set_sense(
+                scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_COMMAND_OPERATION_CODE, 0);
+            return false;
+        }
+        if(transfer_len) {
+            scsi->phase_error = true;
             return false;
         }
         return true;
@@ -791,7 +803,8 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
         // packet); only sanity-check that this really is the write parameters page.
         if(scsi->mode_select.remaining == (uint16_t)(scsi->cmd[7] << 8 | scsi->cmd[8])) {
             uint8_t page = len >= 9 ? data[8] & 0x3F : 0;
-            if(len >= 9 && page != 0x05 && page != 0x0E) {
+            if(len >= 9 && page != 0x05 &&
+               (page != 0x0E || !scsi_audio_playback_supported(scsi))) {
                 scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
                 scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
                 return false;
@@ -1272,7 +1285,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             }
             offset += feature_len;
         }
-        if(scsi->fn.audio_cd) {
+        if(scsi_audio_playback_supported(scsi)) {
             uint16_t feature = 0x0103;
             bool selected = request_type == 2 ?
                                 feature == starting_feature :
@@ -1760,7 +1773,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         // Obsolete "seek to LBA 0". There is no physical mechanism to move, so acknowledge it
         // as a no-op; some hosts still issue it and expect GOOD status.
         FURI_LOG_D(TAG, "SCSI_REZERO_UNIT");
-        if(scsi->fn.audio_cd) {
+        if(scsi_audio_playback_supported(scsi)) {
             return scsi_audio_control(scsi, SCSIAudioControlSeek, 0, scsi_medium_blocks(scsi));
         }
         return true;
@@ -1791,17 +1804,18 @@ bool scsi_cmd_end(SCSISession* scsi) {
         }
         if(eject && !start) {
             if(!scsi->fn.sync(scsi->fn.ctx)) return false;
-            if(scsi->fn.audio_cd && !scsi_audio_control(scsi, SCSIAudioControlStop, 0, 0)) {
+            if(scsi_audio_playback_supported(scsi) &&
+               !scsi_audio_control(scsi, SCSIAudioControlStop, 0, 0)) {
                 return false;
             }
             scsi->eject_pending = true;
-        } else if(scsi->fn.audio_cd && !start) {
+        } else if(scsi_audio_playback_supported(scsi) && !start) {
             return scsi_audio_control(scsi, SCSIAudioControlStop, 0, 0);
         }
         return true;
     }; break;
     case SCSI_PLAY_AUDIO_10: {
-        if(len < 10 || !scsi->fn.audio_cd) return false;
+        if(len < 10 || !scsi_audio_playback_supported(scsi)) return false;
         uint32_t start_lba = scsi_read_be32(cmd + 2);
         uint32_t count = cmd[7] << 8 | cmd[8];
         FURI_LOG_D(TAG, "SCSI_PLAY_AUDIO_10 %08lX %04lX", start_lba, count);
@@ -1814,7 +1828,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         return scsi_audio_play_range(scsi, start_lba, end_lba);
     }; break;
     case SCSI_PLAY_AUDIO_12: {
-        if(len < 12 || !scsi->fn.audio_cd) return false;
+        if(len < 12 || !scsi_audio_playback_supported(scsi)) return false;
         uint32_t start_lba = scsi_read_be32(cmd + 2);
         uint32_t count = scsi_read_be32(cmd + 6);
         FURI_LOG_D(TAG, "SCSI_PLAY_AUDIO_12 %08lX %08lX", start_lba, count);
@@ -1827,7 +1841,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         return scsi_audio_play_range(scsi, start_lba, end_lba);
     }; break;
     case SCSI_PLAY_AUDIO_MSF: {
-        if(len < 10 || !scsi->fn.audio_cd) return false;
+        if(len < 10 || !scsi_audio_playback_supported(scsi)) return false;
         uint32_t start_lba;
         uint32_t end_lba;
         bool current_position = cmd[3] == 0xFF && cmd[4] == 0xFF && cmd[5] == 0xFF;
@@ -1852,7 +1866,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         FURI_LOG_D(TAG, "SCSI_PLAY_AUDIO_TRACK_INDEX");
         return scsi_audio_play_track_index(scsi, cmd, len);
     case SCSI_PAUSE_RESUME: {
-        if(len < 10 || !scsi->fn.audio_cd) return false;
+        if(len < 10 || !scsi_audio_playback_supported(scsi)) return false;
         bool resume = cmd[8] & 0x01;
         FURI_LOG_D(TAG, "SCSI_PAUSE_RESUME resume=%u", resume);
         return scsi_audio_control(
@@ -1862,7 +1876,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
         FURI_LOG_D(TAG, "SCSI_STOP_PLAY_SCAN");
         return len >= 10 && scsi_audio_control(scsi, SCSIAudioControlStop, 0, 0);
     case SCSI_SCAN: {
-        if(len < 12 || !scsi->fn.audio_cd) return false;
+        if(len < 12 || !scsi_audio_playback_supported(scsi)) return false;
         uint8_t address_type = cmd[9] >> 6;
         uint32_t start_lba;
         if(address_type == 0) {
@@ -1955,7 +1969,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
             scsi->asc = SCSI_ASC_LBA_OOB;
             return false;
         }
-        if(scsi->fn.audio_cd) {
+        if(scsi_audio_playback_supported(scsi)) {
             return scsi_audio_control(scsi, SCSIAudioControlSeek, lba, scsi_medium_blocks(scsi));
         }
         // Nothing physically moves; just validate the address and acknowledge.

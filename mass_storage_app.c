@@ -53,6 +53,7 @@ MassStorageApp* mass_storage_app_alloc(char* arg) {
     app->read_only = false;
     app->exit_on_eject = MassStorageExitOnEjectDisk;
     app->device_type = MassStorageDeviceTypeUsbSsd;
+    app->audio_output = AudioCdOutputBoth;
 
     if(arg != NULL) {
         furi_string_set_str(app->file_path, arg);

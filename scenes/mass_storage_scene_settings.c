@@ -13,6 +13,13 @@ static const char* exit_on_eject_names[MassStorageExitOnEjectCount] = {
     [MassStorageExitOnEjectUsb] = "USB",
 };
 
+static const char* audio_output_names[AudioCdOutputCount] = {
+    [AudioCdOutputOff] = "Off",
+    [AudioCdOutputSpeaker] = "Speaker",
+    [AudioCdOutputExternal] = "External",
+    [AudioCdOutputBoth] = "Both",
+};
+
 static void mass_storage_settings_select(void* context, uint32_t index) {
     MassStorageApp* app = context;
     if(index == 0) {
@@ -36,6 +43,12 @@ static void mass_storage_device_type(VariableItem* item) {
     MassStorageApp* app = variable_item_get_context(item);
     app->device_type = variable_item_get_current_value_index(item);
     variable_item_set_current_value_text(item, device_type_names[app->device_type]);
+}
+
+static void mass_storage_audio_output(VariableItem* item) {
+    MassStorageApp* app = variable_item_get_context(item);
+    app->audio_output = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, audio_output_names[app->audio_output]);
 }
 
 void mass_storage_scene_settings_on_enter(void* context) {
@@ -70,6 +83,18 @@ void mass_storage_scene_settings_on_enter(void* context) {
         fixed_optical ? 1 : MassStorageDeviceTypeCount,
         fixed_optical ? NULL : mass_storage_device_type,
         app);
+
+    if(is_cue) {
+        VariableItem* audio_output_item = variable_item_list_add(
+            app->variable_item_list,
+            "Local output",
+            AudioCdOutputCount,
+            mass_storage_audio_output,
+            app);
+        variable_item_set_current_value_index(audio_output_item, app->audio_output);
+        variable_item_set_current_value_text(
+            audio_output_item, audio_output_names[app->audio_output]);
+    }
 
     variable_item_list_set_enter_callback(
         app->variable_item_list, mass_storage_settings_select, app);

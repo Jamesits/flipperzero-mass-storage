@@ -12,7 +12,7 @@
 #define AUDIO_CD_SPEAKER_CHANNEL LL_TIM_CHANNEL_CH1
 #define AUDIO_CD_DMA_INSTANCE    DMA1, LL_DMA_CHANNEL_1
 
-void audio_cd_hal_init(uint32_t sample_rate) {
+void audio_cd_hal_init(uint32_t sample_rate, bool speaker_output, bool external_output) {
     furi_hal_bus_enable(FuriHalBusTIM2);
 
     LL_TIM_InitTypeDef timer = {0};
@@ -33,13 +33,23 @@ void audio_cd_hal_init(uint32_t sample_rate) {
     output.CompareValue = 1;
     LL_TIM_OC_Init(AUDIO_CD_SAMPLE_TIMER, AUDIO_CD_SPEAKER_CHANNEL, &output);
 
-    // TIM16 remains connected to the internal speaker; PA6 mirrors it for line output.
-    furi_hal_gpio_init_ex(
-        &gpio_ext_pa6,
-        GpioModeAltFunctionPushPull,
-        GpioPullNo,
-        GpioSpeedVeryHigh,
-        GpioAltFn14TIM16);
+    if(speaker_output) {
+        furi_hal_gpio_init_ex(
+            &gpio_speaker, GpioModeAltFunctionPushPull, GpioPullNo, GpioSpeedLow, GpioAltFn14TIM16);
+    } else {
+        furi_hal_gpio_init(&gpio_speaker, GpioModeAnalog, GpioPullDown, GpioSpeedLow);
+    }
+
+    if(external_output) {
+        furi_hal_gpio_init_ex(
+            &gpio_ext_pa6,
+            GpioModeAltFunctionPushPull,
+            GpioPullNo,
+            GpioSpeedVeryHigh,
+            GpioAltFn14TIM16);
+    } else {
+        furi_hal_gpio_init(&gpio_ext_pa6, GpioModeAnalog, GpioPullNo, GpioSpeedLow);
+    }
 }
 
 void audio_cd_hal_deinit(void) {

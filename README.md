@@ -23,7 +23,7 @@ Features:
 
 ### Raw Disk Images
 
-`.img` and `.raw` files are emulated as block devices.
+`.img` and `.raw` files are emulated as block devices, read-write and read-only configurable.
 
 ### ISO Images
 
@@ -35,7 +35,11 @@ Features:
 contain up to 99 `AUDIO` tracks, `INDEX 00/01` entries, and `PREGAP` entries. Multi-file and mixed-mode
 CUE sheets are not supported.
 
-Audio CD playback is supported over both USB CD emulation and the Flipper's speaker / PA6 output.
+Audio CD playback is supported over:
+
+- USB CD emulation
+- Flipper's speaker
+- PA6 output
 
 Flipper speaker / PA6 output controls:
 

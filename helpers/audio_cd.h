@@ -12,7 +12,16 @@
 
 typedef struct AudioCd AudioCd;
 
-AudioCd* audio_cd_alloc(Storage* storage, const char* cue_path, FuriString* error);
+typedef enum {
+    AudioCdOutputOff = 0,
+    AudioCdOutputSpeaker = 1 << 0,
+    AudioCdOutputExternal = 1 << 1,
+    AudioCdOutputBoth = AudioCdOutputSpeaker | AudioCdOutputExternal,
+    AudioCdOutputCount,
+} AudioCdOutput;
+
+AudioCd*
+    audio_cd_alloc(Storage* storage, const char* cue_path, AudioCdOutput output, FuriString* error);
 void audio_cd_free(AudioCd* cd);
 
 uint32_t audio_cd_num_sectors(const AudioCd* cd);
