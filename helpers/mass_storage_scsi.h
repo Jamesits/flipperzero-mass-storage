@@ -39,6 +39,12 @@ typedef enum {
 } SCSIAudioStatusCode;
 
 typedef enum {
+    SCSIAudioScanNone,
+    SCSIAudioScanForward,
+    SCSIAudioScanBackward,
+} SCSIAudioScanDirection;
+
+typedef enum {
     SCSIAudioControlPlay,
     SCSIAudioControlPause,
     SCSIAudioControlResume,
@@ -59,6 +65,7 @@ typedef struct {
 
 typedef struct {
     SCSIAudioStatusCode status;
+    SCSIAudioScanDirection scan_direction;
     uint32_t lba;
     uint32_t end_lba;
     uint8_t track;

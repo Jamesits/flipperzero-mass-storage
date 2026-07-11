@@ -22,9 +22,11 @@ typedef struct {
     uint32_t track_end;
 } MassStorageModel;
 
-static const char* mass_storage_audio_status_name(SCSIAudioStatusCode status) {
-    switch(status) {
+static const char* mass_storage_audio_status_name(const SCSIAudioStatus* status) {
+    switch(status->status) {
     case SCSIAudioStatusPlaying:
+        if(status->scan_direction == SCSIAudioScanForward) return "FF";
+        if(status->scan_direction == SCSIAudioScanBackward) return "Rewind";
         return "Playing";
     case SCSIAudioStatusPaused:
         return "Paused";
@@ -55,7 +57,7 @@ static void mass_storage_draw_audio(Canvas* canvas, MassStorageModel* model) {
         "Track %u/%u  %s",
         model->audio_status.track,
         model->track_count,
-        mass_storage_audio_status_name(model->audio_status.status));
+        mass_storage_audio_status_name(&model->audio_status));
     canvas_draw_str_aligned(
         canvas, 64, 24, AlignCenter, AlignTop, furi_string_get_cstr(model->status_string));
 

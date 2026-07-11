@@ -471,8 +471,15 @@ static void
     audio_cd_set_status(AudioCd* cd, SCSIAudioStatusCode status, uint32_t lba, uint32_t end_lba) {
     furi_mutex_acquire(cd->state_mutex, FuriWaitForever);
     cd->status.status = status;
+    if(status != SCSIAudioStatusPlaying) cd->status.scan_direction = SCSIAudioScanNone;
     cd->status.lba = MIN(lba, cd->sectors);
     cd->status.end_lba = MIN(end_lba, cd->sectors);
+    furi_mutex_release(cd->state_mutex);
+}
+
+static void audio_cd_set_scan_direction(AudioCd* cd, SCSIAudioScanDirection direction) {
+    furi_mutex_acquire(cd->state_mutex, FuriWaitForever);
+    cd->status.scan_direction = direction;
     furi_mutex_release(cd->state_mutex);
 }
 
@@ -604,24 +611,28 @@ static void audio_cd_handle_control(AudioCd* cd, const AudioCdEvent* event) {
     switch(event->control) {
     case SCSIAudioControlPlay:
         cd->scan_active = false;
+        audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
         audio_cd_begin_playback(cd, event->start_lba, event->end_lba, false);
         break;
     case SCSIAudioControlPause:
         if(current.status == SCSIAudioStatusPlaying) {
             audio_cd_stop_output(cd);
             cd->scan_active = false;
+            audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
             audio_cd_set_status(cd, SCSIAudioStatusPaused, current.lba, current.end_lba);
         }
         break;
     case SCSIAudioControlResume:
         if(current.status == SCSIAudioStatusPaused) {
             cd->scan_active = false;
+            audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
             audio_cd_begin_playback(cd, current.lba, current.end_lba, false);
         }
         break;
     case SCSIAudioControlStop:
         audio_cd_stop_output(cd);
         cd->scan_active = false;
+        audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
         audio_cd_set_status(cd, SCSIAudioStatusStopped, current.lba, current.end_lba);
         break;
     case SCSIAudioControlScanForward:
@@ -629,12 +640,15 @@ static void audio_cd_handle_control(AudioCd* cd, const AudioCdEvent* event) {
         cd->scan_restore_status = current.status;
         cd->scan_active = true;
         cd->scan_reverse = event->control == SCSIAudioControlScanBackward;
+        audio_cd_set_scan_direction(
+            cd, cd->scan_reverse ? SCSIAudioScanBackward : SCSIAudioScanForward);
         audio_cd_begin_playback(cd, event->start_lba, event->end_lba, cd->scan_reverse);
         break;
     case SCSIAudioControlScanEnd:
         if(cd->scan_active) {
             audio_cd_stop_output(cd);
             cd->scan_active = false;
+            audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
             if(cd->scan_restore_status == SCSIAudioStatusPlaying) {
                 audio_cd_begin_playback(cd, current.lba, current.end_lba, false);
             } else {
@@ -648,6 +662,7 @@ static void audio_cd_handle_control(AudioCd* cd, const AudioCdEvent* event) {
     case SCSIAudioControlSeek:
         audio_cd_stop_output(cd);
         cd->scan_active = false;
+        audio_cd_set_scan_direction(cd, SCSIAudioScanNone);
         if(current.status == SCSIAudioStatusPlaying) {
             audio_cd_begin_playback(cd, event->start_lba, event->end_lba, false);
         } else {
