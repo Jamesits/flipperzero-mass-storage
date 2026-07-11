@@ -206,6 +206,22 @@ static bool scsi_audio_control(
     return true;
 }
 
+static bool scsi_audio_read_cd_supported(SCSISession* scsi, const uint8_t* cmd) {
+    uint8_t sector_type = (cmd[1] >> 2) & 0x07;
+    uint8_t main_channel = cmd[9];
+
+    // CD-DA has no separate sync, header, or EDC/ECC fields, so requesting them does not
+    // increase the 2352-byte payload. Windows requests 0xF0 and Linux requests 0xF8 here.
+    // C2 error pointers and subchannel data would add bytes that we cannot provide.
+    if((sector_type == 0 || sector_type == 1) && (main_channel & 0x10) && !(main_channel & 0x07) &&
+       cmd[10] == 0) {
+        return true;
+    }
+
+    scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_FIELD_IN_CDB, 0);
+    return false;
+}
+
 static uint32_t scsi_optical_packet_size(SCSISession* scsi) {
     return scsi->optical_packet_size ? scsi->optical_packet_size : CD_RW_PACKET_SIZE;
 }
@@ -671,11 +687,7 @@ bool scsi_cmd_start(
         uint32_t count = (uint32_t)cmd[6] << 16 | (uint32_t)cmd[7] << 8 | cmd[8];
         uint32_t block_size = scsi->fn.block_size;
         if(scsi->fn.audio_cd) {
-            uint8_t sector_type = (cmd[1] >> 2) & 0x07;
-            if((sector_type != 0 && sector_type != 1) || cmd[9] != 0x10 || cmd[10] != 0) {
-                scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_FIELD_IN_CDB, 0);
-                return false;
-            }
+            if(!scsi_audio_read_cd_supported(scsi, cmd)) return false;
             block_size = 2352;
             uint64_t expected = (uint64_t)count * block_size;
             if(expected > UINT32_MAX || transfer_len != expected) {
@@ -704,11 +716,7 @@ bool scsi_cmd_start(
         uint32_t count = end_lba - start_lba;
         uint32_t block_size = scsi->fn.block_size;
         if(scsi->fn.audio_cd) {
-            uint8_t sector_type = (cmd[1] >> 2) & 0x07;
-            if((sector_type != 0 && sector_type != 1) || cmd[9] != 0x10 || cmd[10] != 0) {
-                scsi_set_sense(scsi, SCSI_SK_ILLEGAL_REQUEST, SCSI_ASC_INVALID_FIELD_IN_CDB, 0);
-                return false;
-            }
+            if(!scsi_audio_read_cd_supported(scsi, cmd)) return false;
             block_size = 2352;
             uint64_t expected = (uint64_t)count * block_size;
             if(expected > UINT32_MAX || transfer_len != expected) {
@@ -1257,6 +1265,9 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
                                     (request_type != 1 || (features[offset + 2] & 0x01));
             if(selected) {
                 memcpy(response + response_len, features + offset, feature_len);
+                if(feature == 0x001E && scsi->fn.audio_cd) {
+                    response[response_len + 4] |= 0x80; // digital audio play via READ CD
+                }
                 response_len += feature_len;
             }
             offset += feature_len;
