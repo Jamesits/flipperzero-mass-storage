@@ -43,6 +43,7 @@ Flipper speaker / PA6 output controls:
 - Hold OK: stop
 - Left: restart the current track; press again for earlier tracks
 - Right: next track
+- Up/Down: increase/decrease volume
 - Hold Left/Right: scan backward/forward
 
 Hosts can also control playback with the MMC play, pause/resume, stop, seek, and scan commands.

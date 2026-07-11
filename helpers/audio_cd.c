@@ -74,6 +74,7 @@ struct AudioCd {
     bool scan_reverse;
     SCSIAudioStatusCode scan_restore_status;
     SCSIAudioStatus status;
+    uint8_t volume;
 };
 
 static void audio_cd_error(FuriString* error, const char* text) {
@@ -531,12 +532,14 @@ static bool audio_cd_fill_half(AudioCd* cd, uint8_t half) {
     }
 
     uint32_t samples = raw_length / 4;
+    uint8_t volume = audio_cd_get_volume(cd);
     for(uint32_t i = 0; i < samples; i++) {
         const uint8_t* sample = cd->raw_buffer + i * 4;
         int16_t left = (uint16_t)sample[0] | (uint16_t)sample[1] << 8;
         int16_t right = (uint16_t)sample[2] | (uint16_t)sample[3] << 8;
         int32_t mono = left / 2 + right / 2;
-        output[i] = (mono >> 8) + 128;
+        int32_t scaled = mono * volume / AUDIO_CD_VOLUME_MAX;
+        output[i] = (scaled >> 8) + 128;
     }
     cd->half_valid[half] = samples;
 
@@ -819,6 +822,7 @@ AudioCd* audio_cd_alloc(Storage* storage, const char* cue_path, FuriString* erro
     cd->status.end_lba = cd->sectors;
     cd->status.track = 1;
     cd->status.index = 1;
+    cd->volume = AUDIO_CD_VOLUME_MAX;
     FURI_LOG_I(TAG, "CUE ready: %u tracks, %lu sectors", cd->track_count, cd->sectors);
     return cd;
 }
@@ -882,6 +886,25 @@ bool audio_cd_get_status(AudioCd* cd, SCSIAudioStatus* status) {
     furi_mutex_release(cd->state_mutex);
     status->track = audio_cd_track_at_lba(cd, MIN(status->lba, cd->sectors - 1), &status->index);
     return true;
+}
+
+uint8_t audio_cd_get_volume(AudioCd* cd) {
+    furi_assert(cd);
+    furi_assert(cd->state_mutex);
+
+    furi_mutex_acquire(cd->state_mutex, FuriWaitForever);
+    uint8_t volume = cd->volume;
+    furi_mutex_release(cd->state_mutex);
+    return volume;
+}
+
+void audio_cd_set_volume(AudioCd* cd, uint8_t volume) {
+    furi_assert(cd);
+    furi_assert(cd->state_mutex);
+
+    furi_mutex_acquire(cd->state_mutex, FuriWaitForever);
+    cd->volume = MIN(volume, AUDIO_CD_VOLUME_MAX);
+    furi_mutex_release(cd->state_mutex);
 }
 
 bool audio_cd_control(AudioCd* cd, SCSIAudioControl control, uint32_t start_lba, uint32_t end_lba) {

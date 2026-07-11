@@ -8,6 +8,7 @@
 #define AUDIO_CD_SECTORS_PER_SEC (75UL)
 #define AUDIO_CD_SAMPLE_RATE     (44100UL)
 #define AUDIO_CD_MAX_TRACKS      (99U)
+#define AUDIO_CD_VOLUME_MAX      (10U)
 
 typedef struct AudioCd AudioCd;
 
@@ -18,6 +19,8 @@ uint32_t audio_cd_num_sectors(const AudioCd* cd);
 uint8_t audio_cd_track_count(const AudioCd* cd);
 bool audio_cd_track_info(const AudioCd* cd, uint8_t track, SCSIAudioTrackInfo* info);
 bool audio_cd_get_status(AudioCd* cd, SCSIAudioStatus* status);
+uint8_t audio_cd_get_volume(AudioCd* cd);
+void audio_cd_set_volume(AudioCd* cd, uint8_t volume);
 bool audio_cd_control(AudioCd* cd, SCSIAudioControl control, uint32_t start_lba, uint32_t end_lba);
 
 bool audio_cd_read(

@@ -11,6 +11,8 @@ typedef enum {
     MassStorageInputStop,
     MassStorageInputPrevious,
     MassStorageInputNext,
+    MassStorageInputVolumeUp,
+    MassStorageInputVolumeDown,
     MassStorageInputScanBackward,
     MassStorageInputScanForward,
     MassStorageInputScanEnd,
@@ -37,7 +39,8 @@ void mass_storage_set_audio_status(
     const SCSIAudioStatus* status,
     uint8_t track_count,
     uint32_t track_start,
-    uint32_t track_end);
+    uint32_t track_end,
+    uint8_t volume);
 
 void mass_storage_set_input_callback(
     MassStorage* mass_storage,

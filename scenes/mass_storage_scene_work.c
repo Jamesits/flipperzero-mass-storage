@@ -245,13 +245,25 @@ static void mass_storage_update_audio_view(MassStorageApp* app) {
             &status,
             audio_cd_track_count(app->audio_cd),
             track.start_lba,
-            track.end_lba);
+            track.end_lba,
+            audio_cd_get_volume(app->audio_cd));
     }
 }
 
 static void mass_storage_audio_input(MassStorageInput input, void* context) {
     MassStorageApp* app = context;
     if(!app->audio_cd) return;
+
+    if(input == MassStorageInputVolumeUp || input == MassStorageInputVolumeDown) {
+        uint8_t volume = audio_cd_get_volume(app->audio_cd);
+        if(input == MassStorageInputVolumeUp && volume < AUDIO_CD_VOLUME_MAX) {
+            audio_cd_set_volume(app->audio_cd, volume + 1);
+        } else if(input == MassStorageInputVolumeDown && volume > 0) {
+            audio_cd_set_volume(app->audio_cd, volume - 1);
+        }
+        mass_storage_update_audio_view(app);
+        return;
+    }
 
     SCSIAudioStatus status;
     if(!audio_cd_get_status(app->audio_cd, &status)) return;

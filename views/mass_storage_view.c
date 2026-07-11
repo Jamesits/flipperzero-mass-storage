@@ -20,6 +20,7 @@ typedef struct {
     uint8_t track_count;
     uint32_t track_start;
     uint32_t track_end;
+    uint8_t volume;
 } MassStorageModel;
 
 static const char* mass_storage_audio_status_name(const SCSIAudioStatus* status) {
@@ -48,9 +49,14 @@ static void mass_storage_draw_audio(Canvas* canvas, MassStorageModel* model) {
         canvas, canvas_width(canvas) / 2, 0, AlignCenter, AlignTop, "Audio CD");
 
     canvas_set_font(canvas, FontSecondary);
-    elements_string_fit_width(canvas, model->file_name, 120);
+    elements_string_fit_width(canvas, model->file_name, 116);
     canvas_draw_str_aligned(
         canvas, 64, 12, AlignCenter, AlignTop, furi_string_get_cstr(model->file_name));
+
+    const uint8_t volume_height = 29;
+    uint8_t volume_fill = model->volume * volume_height / AUDIO_CD_VOLUME_MAX;
+    canvas_draw_frame(canvas, 124, 12, 4, volume_height + 2);
+    if(volume_fill) canvas_draw_box(canvas, 125, 13 + volume_height - volume_fill, 2, volume_fill);
 
     furi_string_printf(
         model->status_string,
@@ -180,6 +186,14 @@ static bool mass_storage_input_callback(InputEvent* event, void* context) {
         input = MassStorageInputPrevious;
     } else if(event->key == InputKeyRight && event->type == InputTypeShort) {
         input = MassStorageInputNext;
+    } else if(
+        event->key == InputKeyUp &&
+        (event->type == InputTypeShort || event->type == InputTypeRepeat)) {
+        input = MassStorageInputVolumeUp;
+    } else if(
+        event->key == InputKeyDown &&
+        (event->type == InputTypeShort || event->type == InputTypeRepeat)) {
+        input = MassStorageInputVolumeDown;
     } else if(event->key == InputKeyLeft && event->type == InputTypeLong) {
         input = MassStorageInputScanBackward;
     } else if(event->key == InputKeyRight && event->type == InputTypeLong) {
@@ -189,7 +203,8 @@ static bool mass_storage_input_callback(InputEvent* event, void* context) {
         event->type == InputTypeRelease) {
         input = MassStorageInputScanEnd;
     } else if(
-        (event->key == InputKeyLeft || event->key == InputKeyRight || event->key == InputKeyOk) &&
+        (event->key == InputKeyLeft || event->key == InputKeyRight || event->key == InputKeyUp ||
+         event->key == InputKeyDown || event->key == InputKeyOk) &&
         (event->type == InputTypePress || event->type == InputTypeRepeat)) {
         return true;
     } else {
@@ -286,7 +301,8 @@ void mass_storage_set_audio_status(
     const SCSIAudioStatus* status,
     uint8_t track_count,
     uint32_t track_start,
-    uint32_t track_end) {
+    uint32_t track_end,
+    uint8_t volume) {
     furi_assert(status);
     with_view_model(
         mass_storage->view,
@@ -296,6 +312,7 @@ void mass_storage_set_audio_status(
             model->track_count = track_count;
             model->track_start = track_start;
             model->track_end = track_end;
+            model->volume = volume;
         },
         true);
 }
