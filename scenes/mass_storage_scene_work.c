@@ -161,7 +161,9 @@ bool mass_storage_scene_work_on_event(void* context, SceneManagerEvent event) {
             app->led_bytes_read = app->bytes_read;
             app->led_bytes_written = app->bytes_written;
         } else if(app->led_blinking) {
+            // Idle: stop the read/write blink and show a steady blue.
             notification_message(app->notifications, &sequence_blink_stop);
+            notification_message(app->notifications, &sequence_set_only_blue_255);
             app->led_blinking = false;
         }
     } else if(event.type == SceneManagerEventTypeBack) {
@@ -244,6 +246,9 @@ void mass_storage_scene_work_on_enter(void* context) {
 
     furi_string_free(file_name);
 
+    // Disk enabled but idle: steady blue, no flashing.
+    notification_message(app->notifications, &sequence_set_only_blue_255);
+
     mass_storage_app_show_loading_popup(app, false);
     view_dispatcher_switch_to_view(app->view_dispatcher, MassStorageAppViewWork);
 }
@@ -256,6 +261,8 @@ void mass_storage_scene_work_on_exit(void* context) {
         notification_message(app->notifications, &sequence_blink_stop);
         app->led_blinking = false;
     }
+    // Clear the steady blue (or any leftover color) shown while enabled.
+    notification_message(app->notifications, &sequence_reset_rgb);
 
     if(app->usb_mutex) {
         furi_mutex_free(app->usb_mutex);
