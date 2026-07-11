@@ -35,7 +35,7 @@ Features:
 contain up to 99 `AUDIO` tracks, `INDEX 00/01` entries, and `PREGAP` entries. Multi-file and mixed-mode
 CUE sheets are not supported.
 
-Audio CD playback is supported over both USB CD emulation and the Flipper's speaker / PA6 output..
+Audio CD playback is supported over both USB CD emulation and the Flipper's speaker / PA6 output.
 
 Flipper speaker / PA6 output controls:
 
