@@ -28,6 +28,9 @@
 // packet from terminating a multi-chunk READ CD transfer before its final data chunk.
 #define USB_MSC_AUDIO_BUF_SIZE (4UL * 2352UL)
 
+#define USB_MSC_STACK_SIZE       (1024UL)
+#define USB_MSC_AUDIO_STACK_SIZE (2UL * 1024UL)
+
 static usbd_respond usb_ep_config(usbd_device* dev, uint8_t cfg);
 static usbd_respond usb_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback);
 
@@ -386,7 +389,8 @@ static void usb_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx) {
 
     mass->thread = furi_thread_alloc();
     furi_thread_set_name(mass->thread, "MassStorageUsb");
-    furi_thread_set_stack_size(mass->thread, 1024);
+    furi_thread_set_stack_size(
+        mass->thread, mass->fn.audio_cd ? USB_MSC_AUDIO_STACK_SIZE : USB_MSC_STACK_SIZE);
     furi_thread_set_context(mass->thread, ctx);
     furi_thread_set_callback(mass->thread, mass_thread_worker);
     furi_thread_start(mass->thread);
