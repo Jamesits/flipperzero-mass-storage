@@ -144,6 +144,11 @@ static void scsi_set_sense(SCSISession* scsi, uint8_t sk, uint8_t asc, uint8_t a
     scsi->ascq = ascq;
 }
 
+static bool scsi_is_blank_cancel_command(const uint8_t* cmd, uint8_t len) {
+    return len >= 6 && cmd[0] == SCSI_START_STOP_UNIT && cmd[1] == 0x01 && cmd[2] == 0 &&
+           cmd[3] == 0 && cmd[4] == 0;
+}
+
 static void scsi_set_blank_progress(SCSISession* scsi, uint16_t progress, bool active) {
     scsi->blank.progress = progress;
     scsi->blank.active = active;
@@ -233,7 +238,10 @@ void scsi_blank_step(SCSISession* scsi, uint8_t* buffer, uint32_t buffer_size) {
 
 void scsi_blank_cancel(SCSISession* scsi) {
     if(!scsi->blank.active) return;
+    scsi->blank.operational_change_pending = true;
+    scsi->blank.busy_change_pending = true;
     scsi->blank.failed = false;
+    scsi_set_sense(scsi, 0, 0, 0);
     scsi_set_blank_progress(scsi, scsi->blank.progress, false);
 }
 
@@ -420,9 +428,10 @@ bool scsi_cmd_start(
     scsi->rx_done = false;
     scsi->tx_done = false;
 
-    if(scsi->blank.active && cmd[0] != SCSI_TEST_UNIT_READY && cmd[0] != SCSI_REQUEST_SENSE &&
-       cmd[0] != SCSI_INQUIRY && cmd[0] != SCSI_GET_CONFIGURATION &&
-       cmd[0] != SCSI_GET_EVENT_STATUS && cmd[0] != SCSI_READ_DISC_INFORMATION) {
+    if(scsi->blank.active && !scsi_is_blank_cancel_command(cmd, len) &&
+       cmd[0] != SCSI_TEST_UNIT_READY && cmd[0] != SCSI_REQUEST_SENSE && cmd[0] != SCSI_INQUIRY &&
+       cmd[0] != SCSI_GET_CONFIGURATION && cmd[0] != SCSI_GET_EVENT_STATUS &&
+       cmd[0] != SCSI_READ_DISC_INFORMATION) {
         scsi_set_sense(
             scsi,
             SCSI_SK_NOT_READY,
@@ -1383,7 +1392,20 @@ bool scsi_cmd_end(SCSISession* scsi) {
         if(len < 6) return false;
         bool eject = (cmd[4] & 2) != 0;
         bool start = (cmd[4] & 1) != 0;
-        FURI_LOG_D(TAG, "SCSI_START_STOP_UNIT eject=%d start=%d", eject, start);
+        FURI_LOG_D(
+            TAG,
+            "SCSI_START_STOP_UNIT immediate=%d eject=%d start=%d",
+            !!(cmd[1] & 1),
+            eject,
+            start);
+        if(scsi->blank.active && scsi_is_blank_cancel_command(cmd, len)) {
+            FURI_LOG_D(TAG, "SCSI_BLANK canceled");
+            if(!scsi->fn.sync(scsi->fn.ctx)) {
+                scsi_finish_blank(scsi, false);
+                return false;
+            }
+            scsi_blank_cancel(scsi);
+        }
         if(eject && !start) {
             scsi->eject_pending = true;
         }
