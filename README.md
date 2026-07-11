@@ -27,7 +27,7 @@ Features:
 ### Common Options
 
 - Read only: Off / On
-- Exit on eject: Off (keep the disk mounted no matter what) / Disk (exits when the host ejects the disk / tray) / USB (exists when the host ejects or USB disconnects)
+- Exit on eject: Off (keep the disk mounted no matter what) / Disk (exits when the host ejects the disk / tray) / USB (exits when the host ejects or USB disconnects)
 
 ### Raw Disk Images
 
