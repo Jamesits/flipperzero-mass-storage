@@ -24,6 +24,7 @@
 #define SCSI_MODE_SELECT_10         (0x55)
 #define SCSI_MODE_SENSE_10          (0x5A)
 #define SCSI_CLOSE_TRACK_SESSION    (0x5B)
+#define SCSI_SEND_CUE_SHEET         (0x5D)
 #define SCSI_READ_12                (0xA8)
 #define SCSI_WRITE_12               (0xAA)
 #define SCSI_SET_CD_SPEED           (0xBB)
@@ -31,6 +32,7 @@
 #define SCSI_PREVENT_MEDIUM_REMOVAL (0x1E)
 #define SCSI_START_STOP_UNIT        (0x1B)
 #define SCSI_WRITE_10               (0x2A)
+#define SCSI_READ_CD                (0xBE)
 
 static const uint8_t scsi_peripheral_device_type[MassStorageDeviceTypeCount] = {
     [MassStorageDeviceTypeUsbSsd] = 0x00,
@@ -125,18 +127,18 @@ static uint8_t
             page[2] = 0x03; // read CD-R and CD-RW
             page[3] = read_only ? 0x00 : 0x03; // write CD-R and CD-RW
             page[6] = 0x29; // tray, eject and lock supported
-            page[8] = 0x1B; // 7056 KiB/s read speed
-            page[9] = 0x90;
+            page[8] = 0x01; // 353 KB/s (2x) max read speed
+            page[9] = 0x61;
             page[12] = 0x00;
             page[13] = 0x10; // 16 KiB buffer
-            page[14] = 0x1B;
-            page[15] = 0x90;
-            page[18] = 0x1B; // 7056 KiB/s write speed
-            page[19] = 0x90;
-            page[20] = 0x1B;
-            page[21] = 0x90;
-            page[28] = 0x1B;
-            page[29] = 0x90;
+            page[14] = 0x01; // 353 KB/s (2x) current read speed
+            page[15] = 0x61;
+            page[18] = 0x01; // 353 KB/s (2x) max write speed
+            page[19] = 0x61;
+            page[20] = 0x01; // 353 KB/s (2x) current write speed
+            page[21] = 0x61;
+            page[28] = 0x01;
+            page[29] = 0x61;
         }
         return 32;
     }
@@ -206,9 +208,21 @@ static bool scsi_start_write(
     uint32_t num_blocks = scsi->fn.num_blocks(scsi->fn.ctx);
     // A formatted CD-RW allows random overwrite anywhere; otherwise recording is
     // sequential and must continue at the next writable address.
-    bool bad_lba = lba > num_blocks || count > num_blocks - lba;
-    if(scsi->fn.device_type == MassStorageDeviceTypeOptical && !scsi->optical_formatted) {
-        bad_lba = bad_lba || scsi->optical_finalized || lba != scsi->next_writable_lba;
+    bool sequential = scsi->fn.device_type == MassStorageDeviceTypeOptical &&
+                      !scsi->optical_formatted;
+    bool bad_lba;
+    if(sequential && (int32_t)lba < 0) {
+        // Disc-At-Once burns write the track 1 pre-gap/lead-in at negative LBAs
+        // (0xFFFFFF6A..0xFFFFFFFF) just before the program area at LBA 0. Allow it while the
+        // disc is still empty; the pre-gap blocks are discarded in scsi_cmd_rx_data and the
+        // write flows into the program area at LBA 0.
+        int64_t end = (int64_t)(int32_t)lba + count; // first LBA past this write
+        bad_lba = scsi->optical_finalized || scsi->next_writable_lba != 0 || end > num_blocks;
+    } else {
+        bad_lba = lba > num_blocks || count > num_blocks - lba;
+        if(sequential) {
+            bad_lba = bad_lba || scsi->optical_finalized || lba != scsi->next_writable_lba;
+        }
     }
     if(bad_lba) {
         scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
@@ -255,7 +269,10 @@ bool scsi_cmd_start(
         return scsi_start_write(scsi, lba, count, transfer_len, device_to_host);
     }; break;
     case SCSI_MODE_SELECT_10: {
-        if(len < 10 || !(cmd[1] & 0x10) || (cmd[1] & 0x01)) return false;
+        if(len < 10) return false;
+        // We expect page-format parameters (PF) and simply ignore the SP (save pages) bit:
+        // we don't persist mode pages, but rejecting SP outright (with no sense data) made
+        // real burners fail "set write parameters" with "no additional sense information".
         scsi->mode_select.remaining = cmd[7] << 8 | cmd[8];
         if(device_to_host || transfer_len != scsi->mode_select.remaining) {
             scsi->phase_error = true;
@@ -281,6 +298,26 @@ bool scsi_cmd_start(
         FURI_LOG_D(TAG, "SCSI_FORMAT_UNIT %04X", scsi->format.remaining);
         return true;
     }; break;
+    case SCSI_SEND_CUE_SHEET: {
+        if(len < 10 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        if(scsi->fn.read_only) {
+            scsi->sk = SCSI_SK_DATA_PROTECT;
+            scsi->asc = SCSI_ASC_WRITE_PROTECTED;
+            return false;
+        }
+        // SEND CUE SHEET (0x5D): the host hands over the disc layout for a Disc-At-Once
+        // (SAO) burn in the data-out phase. Recording goes straight to the backing file, so
+        // we accept and discard the cue sheet; the sequential WRITE(10)s that follow do the
+        // work. Length is a 3-byte field in bytes 6..8.
+        scsi->cue.remaining = (uint32_t)cmd[6] << 16 | (uint32_t)cmd[7] << 8 | cmd[8];
+        if(device_to_host || transfer_len != scsi->cue.remaining) {
+            scsi->phase_error = true;
+            return false;
+        }
+        scsi->rx_done = scsi->cue.remaining == 0;
+        FURI_LOG_D(TAG, "SCSI_SEND_CUE_SHEET %08lX", scsi->cue.remaining);
+        return true;
+    }; break;
     case SCSI_READ_10: {
         if(len < 10) return false;
         scsi->read.lba = scsi_read_be32(cmd + 2);
@@ -297,6 +334,17 @@ bool scsi_cmd_start(
         FURI_LOG_D(TAG, "SCSI_READ_12 %08lX %08lX", scsi->read.lba, scsi->read.count);
         return true;
     }; break;
+    case SCSI_READ_CD: {
+        if(len < 12 || scsi->fn.device_type != MassStorageDeviceTypeOptical) return false;
+        // READ CD (0xBE): 3-byte transfer length in blocks (bytes 6..8). Burners use it to
+        // verify written data. We only store the 2048-byte user data per sector, which is
+        // exactly what a Mode 1 user-data read wants, so serve it via the normal read path.
+        scsi->read.lba = scsi_read_be32(cmd + 2);
+        scsi->read.count = (uint32_t)cmd[6] << 16 | (uint32_t)cmd[7] << 8 | cmd[8];
+        scsi->tx_done = scsi->read.count == 0;
+        FURI_LOG_D(TAG, "SCSI_READ_CD %08lX %08lX", scsi->read.lba, scsi->read.count);
+        return true;
+    }; break;
     }
     return true;
 }
@@ -311,15 +359,29 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
         if(len % block_size) return false;
         uint16_t blocks = len / block_size;
         if(blocks > scsi->write.count) return false;
-        bool result =
-            scsi->fn.write(scsi->fn.ctx, scsi->write.lba, blocks, data, blocks * block_size);
-        if(!result) return false;
+        // Discard any leading pre-gap blocks written at negative LBAs (DAO lead-in); only
+        // the program area at LBA >= 0 is backed by the file.
+        uint16_t discard = 0;
+        if((int32_t)scsi->write.lba < 0) {
+            uint32_t to_zero = (uint32_t) - (int32_t)scsi->write.lba;
+            discard = to_zero < blocks ? to_zero : blocks;
+        }
+        uint16_t stored = blocks - discard;
+        if(stored) {
+            uint32_t lba = scsi->write.lba + discard;
+            if(!scsi->fn.write(
+                   scsi->fn.ctx, lba, stored, data + discard * block_size, stored * block_size)) {
+                return false;
+            }
+        }
         scsi->write.lba += blocks;
         scsi->write.count -= blocks;
-        // Track the next writable address only for sequential recording; a formatted
-        // CD-RW is overwritten in place and has no moving write pointer.
-        if(scsi->fn.device_type == MassStorageDeviceTypeOptical && !scsi->optical_formatted) {
-            scsi->next_writable_lba += blocks;
+        // Track the next writable address only for sequential recording of real program
+        // data; discarded pre-gap blocks don't advance it (data still begins at LBA 0). A
+        // formatted CD-RW is overwritten in place and has no moving write pointer.
+        if(stored && scsi->fn.device_type == MassStorageDeviceTypeOptical &&
+           !scsi->optical_formatted) {
+            scsi->next_writable_lba += stored;
             scsi->optical_open = true;
         }
         if(!scsi->write.count) {
@@ -329,11 +391,12 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
     }; break;
     case SCSI_MODE_SELECT_10: {
         if(len > scsi->mode_select.remaining) return false;
-        // Windows sends an 8-byte header followed by Write Parameters page 05h. Accept both
-        // track-at-once (mastered) and packet (restricted overwrite) write types.
+        // Host sends an 8-byte parameter header followed by the Write Parameters page (05h).
+        // We don't act on the parameters (data is written straight to the backing file), so
+        // accept whatever write type / data block type a burner selects (TAO, SAO/DAO,
+        // packet); only sanity-check that this really is the write parameters page.
         if(scsi->mode_select.remaining == (uint16_t)(scsi->cmd[7] << 8 | scsi->cmd[8])) {
-            if(len < 10 || data[6] || data[7] || (data[8] & 0x3F) != 0x05 || data[9] < 3 ||
-               (data[10] & 0x0F) > 1 || (data[12] & 0x0F) != 0x08) {
+            if(len >= 9 && (data[8] & 0x3F) != 0x05) {
                 scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
                 scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
                 return false;
@@ -349,6 +412,13 @@ bool scsi_cmd_rx_data(SCSISession* scsi, uint8_t* data, uint32_t len) {
         if(len > scsi->format.remaining) return false;
         scsi->format.remaining -= len;
         scsi->rx_done = scsi->format.remaining == 0;
+        return true;
+    }; break;
+    case SCSI_SEND_CUE_SHEET: {
+        // We don't parse the cue sheet; just drain the data-out phase.
+        if(len > scsi->cue.remaining) return false;
+        scsi->cue.remaining -= len;
+        scsi->rx_done = scsi->cue.remaining == 0;
         return true;
     }; break;
     default: {
@@ -532,21 +602,28 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             scsi_store_cdrom_address(response + 11, scsi->fn.num_blocks(scsi->fn.ctx), true);
             return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
         }
-        if(format > 1 || (!scsi->fn.read_only && !scsi->optical_finalized)) {
+        if(format > 1) {
             scsi->sk = SCSI_SK_ILLEGAL_REQUEST;
             scsi->asc = SCSI_ASC_INVALID_FIELD_IN_CDB;
             return false;
         }
 
+        // Report the single data track plus lead-out. A real recorder returns a TOC for
+        // blank and appendable CD-RW media too, with the lead-out sitting at the next
+        // writable address, so a host can qualify the disc for a fresh burn. Rejecting the
+        // command here (as we used to for un-finalized writable media) makes burning tools
+        // treat the disc as unusable ("media must be blank or formatted").
         uint8_t response[20] = {
             0x00, 0x12, 0x01, 0x01, 0x00, 0x14, 0x01, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x14, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00,
         };
         bool msf = scsi->cmd[1] & 0x02;
         scsi_store_cdrom_address(response + 8, 0, msf);
-        uint32_t lead_out = scsi->fn.read_only ? scsi->fn.num_blocks(scsi->fn.ctx) :
-                                                 scsi->next_writable_lba;
-        scsi_store_cdrom_address(response + 16, lead_out, msf);
+        // The lead-out sits at the last-possible address (the full recordable capacity). On
+        // blank or appendable media a lead-out at the NWA (0 when blank) made track 1 a
+        // malformed zero-length track (LBA 0..-1), which burning tools read as a bogus data
+        // track. Anchoring it at capacity keeps track 1 a valid invisible track.
+        scsi_store_cdrom_address(response + 16, scsi->fn.num_blocks(scsi->fn.ctx), msf);
         return scsi_tx_response(scsi, data, len, cap, response, sizeof(response));
     }; break;
     case SCSI_READ_HEADER: {
@@ -583,6 +660,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
             0x00, 0x23, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, // formattable
             0x00, 0x26, 0x01, 0x00, // restricted overwrite (current once formatted)
             0x00, 0x2D, 0x09, 0x04, 0x00, 0x00, 0x01, 0x00, // CD TAO
+            0x00, 0x2E, 0x03, 0x04, 0x40, 0x00, 0x08, 0x00, // CD mastering (SAO/DAO)
         };
         uint8_t response[96] = {0};
         uint8_t response_len = 8;
@@ -662,6 +740,7 @@ bool scsi_cmd_tx_data(SCSISession* scsi, uint8_t* data, uint32_t* len, uint32_t 
     }; break;
     case SCSI_READ_10: {
     case SCSI_READ_12:
+    case SCSI_READ_CD:
         uint32_t block_size = scsi->fn.block_size;
         bool result =
             scsi->fn.read(scsi->fn.ctx, scsi->read.lba, scsi->read.count, data, len, cap);
@@ -693,6 +772,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
     case SCSI_WRITE_10:
     case SCSI_WRITE_12:
     case SCSI_MODE_SELECT_10:
+    case SCSI_SEND_CUE_SHEET:
         return scsi->rx_done;
 
     case SCSI_REQUEST_SENSE:
@@ -709,6 +789,7 @@ bool scsi_cmd_end(SCSISession* scsi) {
     case SCSI_READ_TRACK_INFORMATION:
     case SCSI_READ_10:
     case SCSI_READ_12:
+    case SCSI_READ_CD:
         return scsi->tx_done;
 
     case SCSI_TEST_UNIT_READY: {

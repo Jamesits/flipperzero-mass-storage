@@ -6,8 +6,9 @@ Derived from [Mass Storage](https://lab.flipper.net/apps/mass_storage). Changes 
 
 - Fixed random OOM reboots
 - Supports image size up to 8GiB (64-bit SCSI messages and image splitting on FAT32)
-- Flashes the LED during file transfer
+- Emulates SSD, HDD, FDD, CD-RW
 - Supports mounting disk images read-only
+- LED status indicator
 
 ## Performance
 
@@ -15,6 +16,7 @@ Derived from [Mass Storage](https://lab.flipper.net/apps/mass_storage). Changes 
 - Sequence, 1M blocks, Q1T1, 100% write: 0.21MiB/s
 - Random, 4K blocks, Q32T1, 100% read: 0.39MiB/s, 94.97 IOPS
 - Random, 4K blocks, Q32T1, 100% write: 0.24MiB/s, 59.57 IOPS
+- CD emulation reads and writes at 250KB/s (~1.4X)
 
 ## Development
 

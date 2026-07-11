@@ -79,6 +79,10 @@ typedef struct {
         struct {
             uint16_t remaining;
         } format;
+
+        struct {
+            uint32_t remaining;
+        } cue;
     };
 
     uint32_t next_writable_lba;
